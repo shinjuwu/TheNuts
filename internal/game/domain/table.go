@@ -1,5 +1,9 @@
 package domain
 
+import (
+	"fmt"
+)
+
 type GameState int
 
 const (
@@ -15,6 +19,7 @@ type Table struct {
 	ID             string
 	State          GameState
 	Pots           *PotManager
+	Deck           *Deck
 	CommunityCards []Card
 	DealerPos      int
 	CurrentPos     int
@@ -29,11 +34,46 @@ func NewTable(id string) *Table {
 	return &Table{
 		ID:       id,
 		Pots:     NewPotManager(),
+		Deck:     NewDeck(),
 		Players:  make(map[string]*Player),
 		ActionCh: make(chan PlayerAction, 100),
 		CloseCh:  make(chan struct{}),
 		State:    StateIdle,
 	}
+}
+
+// StartHand 開始新的一手牌
+func (t *Table) StartHand() {
+	// 1. 洗牌
+	t.Deck = NewDeck()
+	t.Deck.Shuffle()
+
+	// 2. 重置狀態
+	t.CommunityCards = make([]Card, 0)
+	t.Pots = NewPotManager()
+	t.State = StatePreFlop
+	t.MinBet = 20 // 假設大盲為 20
+
+	// 3. 發手牌 (每人 2 張)
+	// 從 Dealer 下一位開始發? 通常是小盲先拿?
+	// 簡化: 遍歷所有 Active 玩家發牌
+	for _, p := range t.Seats {
+		if p != nil && p.IsActive() {
+			p.HoleCards = t.Deck.Draw(2)
+			p.Status = StatusPlaying
+			p.CurrentBet = 0
+			p.HasActed = false
+		}
+	}
+
+	// 4. 設定盲注 (Blind)
+	// 這裡簡化處理，假設 DealerPos + 1 是 SB, + 2 是 BB
+	// TODO: 需處理人數少於 2 的情況
+
+	// 5. 設定行動權
+	// Preflop 由 BB 後一位 (UTG) 開始。若是 3 人桌: BTN, SB, BB -> BTN Action
+	t.CurrentPos = t.DealerPos // 之後會 Call moveToNextPlayer 調整到正確位置
+	t.moveToNextPlayer()
 }
 
 func (t *Table) Run() {
@@ -152,16 +192,39 @@ func (t *Table) nextStreet() {
 	switch t.State {
 	case StatePreFlop:
 		t.State = StateFlop
-		// TODO: 發 3 張公牌
+		// 發 3 張公牌
+		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(3)...)
+		fmt.Printf("Dealing Flop: %v\n", t.CommunityCards)
 	case StateFlop:
 		t.State = StateTurn
-		// TODO: 發 1 張公牌
+		// 發 1 張公牌 (Turn)
+		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
+		fmt.Printf("Dealing Turn: %v\n", t.CommunityCards)
 	case StateTurn:
 		t.State = StateRiver
-		// TODO: 發 1 張公牌
+		// 發 1 張公牌 (River)
+		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
+		fmt.Printf("Dealing River: %v\n", t.CommunityCards)
 	case StateRiver:
 		t.State = StateShowdown
-		// TODO: 結算
+		// 結算
+		fmt.Println("Showdown!")
+		payouts := Distribute(t.Pots.Pots, t.Players, t.CommunityCards)
+
+		// 分配籌碼
+		for pid, amount := range payouts {
+			if p, ok := t.Players[pid]; ok {
+				p.Chips += amount
+				fmt.Printf("Player %s wins %d\n", pid, amount)
+			}
+		}
+
+		// 本局結束，重置或進入 Idle
+		// 這裡簡單切回 Idle，實際應用可能會有 StateHandEnd 等待時間
+		t.State = StateIdle
+
+		// TODO: 自動開始下一局? 還是等待外部指令?
+		// 為了測試方便，這裡暫時不自動 Loop
 	case StateShowdown:
 		t.State = StateIdle
 		// TODO: 重置遊戲
