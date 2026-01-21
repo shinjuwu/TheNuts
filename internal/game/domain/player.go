@@ -15,7 +15,7 @@ type Player struct {
 	Chips      int64
 	CurrentBet int64
 	Status     PlayerStatus
-	HoleCards  []int
+	HoleCards  []Card
 	HasActed   bool
 }
 

@@ -14,8 +14,8 @@ const (
 type Table struct {
 	ID             string
 	State          GameState
-	Pot            int64
-	CommunityCards []int
+	Pots           *PotManager
+	CommunityCards []Card
 	DealerPos      int
 	CurrentPos     int
 	MinBet         int64
@@ -28,6 +28,7 @@ type Table struct {
 func NewTable(id string) *Table {
 	return &Table{
 		ID:       id,
+		Pots:     NewPotManager(),
 		Players:  make(map[string]*Player),
 		ActionCh: make(chan PlayerAction, 100),
 		CloseCh:  make(chan struct{}),
@@ -75,7 +76,6 @@ func (t *Table) handleAction(act PlayerAction) {
 		}
 		player.Chips -= amountToCall
 		player.CurrentBet += amountToCall
-		t.Pot += amountToCall
 		player.HasActed = true
 	case ActionBet, ActionRaise:
 		if act.Amount < t.MinBet {
@@ -96,7 +96,6 @@ func (t *Table) handleAction(act PlayerAction) {
 
 		player.Chips -= diff
 		player.CurrentBet = act.Amount
-		t.Pot += diff
 		t.MinBet = act.Amount
 		player.HasActed = true
 
@@ -133,7 +132,17 @@ func (t *Table) isRoundComplete() bool {
 
 // nextStreet 進入下一階段
 func (t *Table) nextStreet() {
-	// 重置所有玩家本輪下注額與狀態
+	// 1. 收集所有玩家本輪下注額到 PotManager
+	//    這會自動處理 Main Pot 和 Side Pots
+	bets := make(map[string]int64)
+	for _, p := range t.Players {
+		if p.CurrentBet > 0 {
+			bets[p.ID] = p.CurrentBet
+		}
+	}
+	t.Pots.Accumulate(bets)
+
+	// 2. 重置所有玩家本輪下注額與狀態
 	for _, p := range t.Players {
 		p.CurrentBet = 0
 		p.HasActed = false
