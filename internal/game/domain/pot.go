@@ -2,8 +2,10 @@ package domain
 
 // Pot 代表一個底池
 type Pot struct {
-	Amount       int64
-	Contributors map[string]bool // 參與此邊池的玩家 ID
+	Amount int64
+	// Contributors 包含所有對此 Pot 有貢獻的玩家 ID (含已 Fold)。
+	// 注意: 派彩時 (Distributor) 必須再次檢查玩家是否 StatusFolded，確定是否有資格贏取。
+	Contributors map[string]bool
 }
 
 func NewPot() *Pot {

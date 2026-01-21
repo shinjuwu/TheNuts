@@ -8,10 +8,13 @@ import "fmt"
  * 我們使用 int32 來編碼一張牌，為了讓比牌演算法能達到極致效能。
  *
  * Bits:
- * 0-7   (8 bits): Prime number associated with rank (for multiplication)
- * 8-11  (4 bits): Rank (0-12) for human readability (2=0, 3=1, ... A=12)
- * 12-15 (4 bits): Suit (1, 2, 4, 8) power of 2 for bitwise OR checks
- * 16-31 (16 bits): Bit mask of the rank (1 << rank)
+ * Bits:
+ * 0-3   (4 bits): Rank (0-12) where 2=0, ... A=12
+ * 4-7   (4 bits): Suit (0-3) where Club=0, ..., Spade=3
+ *
+ * Note: This differs from the original Cactus Kev Prime-based implementation.
+ * We are using a simplified (Suit << 4) | Rank encoding for now.
+ * Structure: [Suit 4bit] [Rank 4bit]
  *
  * Example: Ace of Spades
  * Rank = 12 (A), Suit = Spade

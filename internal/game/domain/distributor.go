@@ -53,7 +53,9 @@ func Distribute(pots []*Pot, players map[string]*Player, board []Card) map[strin
 		for i, pid := range winners {
 			amt := share
 			if int64(i) < remainder {
-				amt++ // 把餘數分給前幾位 (通常是位置最靠前的，這裡簡化為列表順序)
+				// TODO: 目前餘數分配是基於 Map 迭代順序 (隨機) 或者 Slice 順序。
+				// 標準規則應分配給最靠近 Button 的玩家 (Position-based)。
+				amt++ // 把餘數分給前幾位
 			}
 			payouts[pid] += amt
 		}
