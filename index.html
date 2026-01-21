@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>德州撲克伺服器調試器 (Modular Monolith)</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f1f5f9; padding: 2rem; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 350px 1fr; gap: 2rem; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); border-radius: 1rem; padding: 1.5rem; }
+        input, button { width: 100%; padding: 0.75rem; margin: 0.5rem 0; border-radius: 0.5rem; border: none; outline: none; }
+        input { background: #334155; color: white; }
+        button { background: #3b82f6; color: white; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #2563eb; transform: translateY(-1px); }
+        .log-area { background: #020617; border-radius: 0.5rem; height: 400px; overflow-y: auto; padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; color: #10b981; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="glass-panel">
+            <h2>連線設定</h2>
+            <input type="text" id="wsUrl" value="ws://localhost:8080/ws" placeholder="WebSocket URL">
+            <input type="text" id="playerId" placeholder="玩家 ID">
+            <button onclick="connect()">連線</button>
+            <hr style="border: 0.5px solid #334155; margin: 1.5rem 0;">
+            <h2>遊戲操作</h2>
+            <button onclick="action('sit_down')">入座</button>
+            <button onclick="action('bet')">下注</button>
+            <button onclick="action('fold')" style="background: #ef4444;">棄牌</button>
+        </div>
+        <div class="glass-panel">
+            <h2>即時日誌</h2>
+            <div id="log" class="log-area">等待指令...</div>
+        </div>
+    </div>
+    <script>
+        let ws;
+        function log(msg) {
+            const el = document.getElementById('log');
+            el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+            el.scrollTop = el.scrollHeight;
+        }
+        function connect() {
+            const id = document.getElementById('playerId').value;
+            const url = document.getElementById('wsUrl').value + "?player_id=" + id;
+            ws = new WebSocket(url);
+            ws.onopen = () => log("連線成功: " + id);
+            ws.onmessage = (e) => log("收到: " + e.data);
+            ws.onclose = () => log("連線已斷開");
+        }
+        function action(type) {
+            if (!ws) return alert("請先連線");
+            ws.send(JSON.stringify({ action: type, timestamp: Date.now() }));
+        }
+    </script>
+</body>
+</html>

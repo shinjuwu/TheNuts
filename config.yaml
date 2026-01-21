@@ -1,0 +1,13 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+game:
+  min_players: 2
+  max_players: 9
+  default_chips: 1000
+  timeout_seconds: 15
+
+features:
+  enable_side_pots: true
+  enable_mtt: false # 未來擴充用
