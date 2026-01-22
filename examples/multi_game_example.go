@@ -88,6 +88,11 @@ func main() {
 	fmt.Println("   - Slot engine: ⏳ (待實現)")
 	fmt.Println("   - Baccarat engine: ⏳ (待實現)")
 
-	// 保持運行
-	select {}
+	fmt.Println("\n✅ Framework validation complete!")
+	fmt.Println("   To keep the server running, use a signal handler or web server.")
+
+	// 示例程序演示完成，正常退出
+	// 在實際應用中，這裡應該保持服務運行:
+	// signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	// <-quit
 }

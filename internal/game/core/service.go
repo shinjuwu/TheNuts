@@ -96,6 +96,11 @@ func (s *GameService) JoinGame(sessionID, gameID string, buyIn int64) error {
 	return nil
 }
 
+// GetTable 獲取遊戲桌引擎
+func (s *GameService) GetTable(gameID string) (GameEngine, error) {
+	return s.tableManager.GetTable(gameID)
+}
+
 // HandlePlayerAction 處理玩家動作
 func (s *GameService) HandlePlayerAction(ctx context.Context, action PlayerAction) (*ActionResult, error) {
 	s.mu.RLock()
