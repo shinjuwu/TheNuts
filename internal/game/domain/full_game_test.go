@@ -44,14 +44,18 @@ func TestFullGameFlow(t *testing.T) {
 	table.Deck.Cards = riggedCards
 
 	// --- PreFlop ---
-	// StartHand doesn't automatically post blinds yet in my simplified code.
-	// Manual posting for correct chips tracking:
-	// P1 (SB) posts 10
-	p1.Chips -= 10
-	p1.CurrentBet = 10
+	// StartHand now automatically posts blinds via postBlinds()
+	// P1 (Button/SB in heads-up) posts 10
 	// P2 (BB) posts 20
-	p2.Chips -= 20
-	p2.CurrentBet = 20
+	// Blinds are already posted by StartHand()
+
+	// Verify blinds were posted correctly
+	if p1.CurrentBet != 10 {
+		t.Errorf("Expected P1 (SB) bet 10, got %d", p1.CurrentBet)
+	}
+	if p2.CurrentBet != 20 {
+		t.Errorf("Expected P2 (BB) bet 20, got %d", p2.CurrentBet)
+	}
 
 	// Table MinBet is 20.
 

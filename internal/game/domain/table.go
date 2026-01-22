@@ -67,13 +67,139 @@ func (t *Table) StartHand() {
 	}
 
 	// 4. 設定盲注 (Blind)
-	// 這裡簡化處理，假設 DealerPos + 1 是 SB, + 2 是 BB
-	// TODO: 需處理人數少於 2 的情況
+	t.postBlinds()
 
 	// 5. 設定行動權
 	// Preflop 由 BB 後一位 (UTG) 開始。若是 3 人桌: BTN, SB, BB -> BTN Action
 	t.CurrentPos = t.DealerPos // 之後會 Call moveToNextPlayer 調整到正確位置
 	t.moveToNextPlayer()
+}
+
+// postBlinds 收取小盲和大盲注
+func (t *Table) postBlinds() {
+	// 計算活躍玩家數量
+	activePlayers := 0
+	for _, p := range t.Seats {
+		if p != nil && p.IsActive() {
+			activePlayers++
+		}
+	}
+
+	// 至少需要 2 個玩家才能下盲注
+	if activePlayers < 2 {
+		return
+	}
+
+	// 盲注金額（可以從配置讀取，這裡暫時硬編碼）
+	smallBlindAmount := t.MinBet / 2 // 假設 MinBet 是大盲金額
+	bigBlindAmount := t.MinBet
+
+	// 確保至少有基本盲注
+	if smallBlindAmount == 0 {
+		smallBlindAmount = 10
+		bigBlindAmount = 20
+		t.MinBet = bigBlindAmount
+	}
+
+	// Heads-up (兩人對決) 時的特殊規則:
+	// - Button (莊家) 是小盲
+	// - 另一位是大盲
+	if activePlayers == 2 {
+		t.postBlindHeadsUp(smallBlindAmount, bigBlindAmount)
+		return
+	}
+
+	// 3人以上的標準情況:
+	// - DealerPos + 1 = 小盲 (Small Blind)
+	// - DealerPos + 2 = 大盲 (Big Blind)
+	sbPos := (t.DealerPos + 1) % 9
+	bbPos := (t.DealerPos + 2) % 9
+
+	// 收取小盲
+	if sb := t.Seats[sbPos]; sb != nil && sb.IsActive() {
+		amount := min(smallBlindAmount, sb.Chips)
+		sb.Chips -= amount
+		sb.CurrentBet = amount
+
+		// 如果下注後籌碼為 0，標記為 All-in
+		if sb.Chips == 0 {
+			sb.Status = StatusAllIn
+		}
+
+		fmt.Printf("Player %s posts small blind: %d (remaining: %d)\n",
+			sb.ID, amount, sb.Chips)
+	}
+
+	// 收取大盲
+	if bb := t.Seats[bbPos]; bb != nil && bb.IsActive() {
+		amount := min(bigBlindAmount, bb.Chips)
+		bb.Chips -= amount
+		bb.CurrentBet = amount
+
+		// 如果下注後籌碼為 0，標記為 All-in
+		if bb.Chips == 0 {
+			bb.Status = StatusAllIn
+		}
+
+		fmt.Printf("Player %s posts big blind: %d (remaining: %d)\n",
+			bb.ID, amount, bb.Chips)
+	}
+}
+
+// postBlindHeadsUp 處理兩人單挑時的盲注（規則特殊）
+func (t *Table) postBlindHeadsUp(smallBlindAmount, bigBlindAmount int64) {
+	// Heads-up 時:
+	// - Button (莊家) 先行動且是小盲
+	// - 非 Button 是大盲
+
+	var buttonPlayer, otherPlayer *Player
+
+	// 找到 Button 玩家和另一位玩家
+	for i := 0; i < 9; i++ {
+		if p := t.Seats[i]; p != nil && p.IsActive() {
+			if i == t.DealerPos {
+				buttonPlayer = p
+			} else {
+				otherPlayer = p
+			}
+		}
+	}
+
+	// 收取小盲 (Button)
+	if buttonPlayer != nil {
+		amount := min(smallBlindAmount, buttonPlayer.Chips)
+		buttonPlayer.Chips -= amount
+		buttonPlayer.CurrentBet = amount
+
+		if buttonPlayer.Chips == 0 {
+			buttonPlayer.Status = StatusAllIn
+		}
+
+		fmt.Printf("Player %s (Button) posts small blind: %d (remaining: %d)\n",
+			buttonPlayer.ID, amount, buttonPlayer.Chips)
+	}
+
+	// 收取大盲 (另一位玩家)
+	if otherPlayer != nil {
+		amount := min(bigBlindAmount, otherPlayer.Chips)
+		otherPlayer.Chips -= amount
+		otherPlayer.CurrentBet = amount
+
+		if otherPlayer.Chips == 0 {
+			otherPlayer.Status = StatusAllIn
+		}
+
+		fmt.Printf("Player %s posts big blind: %d (remaining: %d)\n",
+			otherPlayer.ID, amount, otherPlayer.Chips)
+	}
+}
+
+// min 返回兩個 int64 中的較小值
+func min(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (t *Table) Run() {
