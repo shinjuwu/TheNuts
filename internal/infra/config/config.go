@@ -11,6 +11,10 @@ type Config struct {
 		Port string `yaml:"port"`
 		Host string `yaml:"host"`
 	} `yaml:"server"`
+	Auth struct {
+		JWTSecret        string `yaml:"jwt_secret"`
+		TicketTTLSeconds int    `yaml:"ticket_ttl_seconds"`
+	} `yaml:"auth"`
 	Game struct {
 		MinPlayers   int   `yaml:"min_players"`
 		MaxPlayers   int   `yaml:"max_players"`

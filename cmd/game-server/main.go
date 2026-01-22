@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shinjuwu/TheNuts/internal/auth"
 	"github.com/shinjuwu/TheNuts/pkg/di"
 	"go.uber.org/zap"
 )
@@ -29,8 +30,19 @@ func main() {
 
 	// 3. 設定 HTTP 路由
 	mux := http.NewServeMux()
+
+	// 認證路由（公開）
+	mux.HandleFunc("/api/auth/login", app.AuthHandler.HandleLogin)
+
+	// 票券路由（需要 JWT 認證）
+	jwtMiddleware := auth.JWTMiddleware(app.JWTService)
+	mux.Handle("/api/auth/ticket", jwtMiddleware(http.HandlerFunc(app.AuthHandler.HandleGetTicket)))
+
+	// WebSocket 路由（需要票券）
 	mux.Handle("/ws", app.WSHandler)
-	mux.Handle("/", http.FileServer(http.Dir("."))) // 方便測試 index.html
+
+	// 靜態文件服務（方便測試 index.html）
+	mux.Handle("/", http.FileServer(http.Dir(".")))
 
 	srv := &http.Server{
 		Addr:    ":" + app.Config.Server.Port,

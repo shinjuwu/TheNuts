@@ -2,6 +2,10 @@ server:
   port: 8080
   host: "0.0.0.0"
 
+auth:
+  jwt_secret: "your-secret-key-change-in-production" # ⚠️ 生產環境必須更換為安全的密鑰
+  ticket_ttl_seconds: 30 # 票券有效期（秒）
+
 game:
   min_players: 2
   max_players: 9

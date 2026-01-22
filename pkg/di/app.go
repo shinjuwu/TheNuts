@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 
+	"github.com/shinjuwu/TheNuts/internal/auth"
 	"github.com/shinjuwu/TheNuts/internal/game"
 	"github.com/shinjuwu/TheNuts/internal/game/adapter/ws"
 	"github.com/shinjuwu/TheNuts/internal/infra/config"
@@ -16,8 +17,18 @@ type App struct {
 	TableManager *game.TableManager
 	Hub          *ws.Hub
 	WSHandler    *ws.Handler
+
+	// 認證相關
+	JWTService  *auth.JWTService
+	TicketStore auth.TicketStore
+	AuthHandler *auth.Handler
 }
 
 func (a *App) Stop(ctx context.Context) {
+	// 關閉票券儲存
+	if a.TicketStore != nil {
+		_ = a.TicketStore.Close()
+	}
+
 	_ = a.Logger.Sync()
 }

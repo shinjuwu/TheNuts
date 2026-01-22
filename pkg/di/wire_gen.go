@@ -26,13 +26,19 @@ func InitApp(configPath string) (*App, error) {
 	}
 	tableManager := game.NewTableManager()
 	hub := ws.NewHub(zapLogger)
-	handler := ws.NewHandler(hub, tableManager, zapLogger)
+	ticketStore := ProvideTicketStore()
+	handler := ws.NewHandler(hub, tableManager, ticketStore, zapLogger)
+	jwtService := ProvideJWTService(configConfig)
+	authHandler := ProvideAuthHandler(jwtService, ticketStore, configConfig, zapLogger)
 	app := &App{
 		Config:       configConfig,
 		Logger:       zapLogger,
 		TableManager: tableManager,
 		Hub:          hub,
 		WSHandler:    handler,
+		JWTService:   jwtService,
+		TicketStore:  ticketStore,
+		AuthHandler:  authHandler,
 	}
 	return app, nil
 }
