@@ -141,19 +141,20 @@ func (r *WalletRepo) Credit(ctx context.Context, tx repository.Transaction, play
 		return fmt.Errorf("amount must be positive")
 	}
 
-	// 檢查冪等性
+	// 鎖定錢包（必須先鎖定才檢查冪等性，避免 race condition）
+	wallet, err := r.GetWithLock(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// 檢查冪等性（在鎖定後檢查，確保唯一性）
 	if idempotencyKey != "" {
-		existing, err := r.txRepo.GetByIdempotencyKey(ctx, idempotencyKey)
+		pgTx := tx.(*PgTransaction).GetTx()
+		existing, err := r.txRepo.GetByIdempotencyKeyWithTx(ctx, pgTx, idempotencyKey)
 		if err == nil && existing != nil {
 			// 交易已存在，直接返回（冪等性保證）
 			return nil
 		}
-	}
-
-	// 鎖定錢包
-	wallet, err := r.GetWithLock(ctx, tx, playerID)
-	if err != nil {
-		return err
 	}
 
 	// 記錄交易前餘額
@@ -213,19 +214,20 @@ func (r *WalletRepo) Debit(ctx context.Context, tx repository.Transaction, playe
 		return fmt.Errorf("amount must be positive")
 	}
 
-	// 檢查冪等性
+	// 鎖定錢包（必須先鎖定才檢查冪等性，避免 race condition）
+	wallet, err := r.GetWithLock(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// 檢查冪等性（在鎖定後檢查，確保唯一性）
 	if idempotencyKey != "" {
-		existing, err := r.txRepo.GetByIdempotencyKey(ctx, idempotencyKey)
+		pgTx := tx.(*PgTransaction).GetTx()
+		existing, err := r.txRepo.GetByIdempotencyKeyWithTx(ctx, pgTx, idempotencyKey)
 		if err == nil && existing != nil {
 			// 交易已存在，直接返回（冪等性保證）
 			return nil
 		}
-	}
-
-	// 鎖定錢包
-	wallet, err := r.GetWithLock(ctx, tx, playerID)
-	if err != nil {
-		return err
 	}
 
 	// 檢查餘額充足

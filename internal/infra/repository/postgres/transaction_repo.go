@@ -164,8 +164,18 @@ func (r *TransactionRepo) GetByWalletID(ctx context.Context, walletID uuid.UUID,
 	return transactions, nil
 }
 
-// GetByIdempotencyKey 根據冪等性鍵查詢交易
+// GetByIdempotencyKey 根據冪等性鍵查詢交易（使用連接池）
 func (r *TransactionRepo) GetByIdempotencyKey(ctx context.Context, key string) (*repository.WalletTransaction, error) {
+	return r.getByIdempotencyKeyWithExecutor(ctx, r.pool, key)
+}
+
+// GetByIdempotencyKeyWithTx 根據冪等性鍵查詢交易（使用事務）
+func (r *TransactionRepo) GetByIdempotencyKeyWithTx(ctx context.Context, executor interface{}, key string) (*repository.WalletTransaction, error) {
+	return r.getByIdempotencyKeyWithExecutor(ctx, executor, key)
+}
+
+// getByIdempotencyKeyWithExecutor 根據冪等性鍵查詢交易（內部方法）
+func (r *TransactionRepo) getByIdempotencyKeyWithExecutor(ctx context.Context, executor interface{}, key string) (*repository.WalletTransaction, error) {
 	query := `
 		SELECT 
 			id, wallet_id, type, amount, balance_before, balance_after,
@@ -175,18 +185,38 @@ func (r *TransactionRepo) GetByIdempotencyKey(ctx context.Context, key string) (
 	`
 
 	tx := &repository.WalletTransaction{}
-	err := r.pool.QueryRow(ctx, query, key).Scan(
-		&tx.ID,
-		&tx.WalletID,
-		&tx.Type,
-		&tx.Amount,
-		&tx.BalanceBefore,
-		&tx.BalanceAfter,
-		&tx.Description,
-		&tx.IdempotencyKey,
-		&tx.GameSessionID,
-		&tx.CreatedAt,
-	)
+	var err error
+
+	switch ex := executor.(type) {
+	case *pgxpool.Pool:
+		err = ex.QueryRow(ctx, query, key).Scan(
+			&tx.ID,
+			&tx.WalletID,
+			&tx.Type,
+			&tx.Amount,
+			&tx.BalanceBefore,
+			&tx.BalanceAfter,
+			&tx.Description,
+			&tx.IdempotencyKey,
+			&tx.GameSessionID,
+			&tx.CreatedAt,
+		)
+	case pgx.Tx:
+		err = ex.QueryRow(ctx, query, key).Scan(
+			&tx.ID,
+			&tx.WalletID,
+			&tx.Type,
+			&tx.Amount,
+			&tx.BalanceBefore,
+			&tx.BalanceAfter,
+			&tx.Description,
+			&tx.IdempotencyKey,
+			&tx.GameSessionID,
+			&tx.CreatedAt,
+		)
+	default:
+		return nil, fmt.Errorf("unsupported executor type")
+	}
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

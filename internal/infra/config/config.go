@@ -21,9 +21,10 @@ type Config struct {
 		Redis    RedisConfig    `yaml:"redis"`
 	} `yaml:"database"`
 	Game struct {
-		MinPlayers   int   `yaml:"min_players"`
-		MaxPlayers   int   `yaml:"max_players"`
-		DefaultChips int64 `yaml:"default_chips"`
+		MinPlayers      int    `yaml:"min_players"`
+		MaxPlayers      int    `yaml:"max_players"`
+		DefaultChips    int64  `yaml:"default_chips"`
+		DefaultCurrency string `yaml:"default_currency"` // Default wallet currency (e.g., USD, CNY)
 	} `yaml:"game"`
 }
 
@@ -34,6 +35,7 @@ type PostgresConfig struct {
 	User            string `yaml:"user"`
 	Password        string `yaml:"password"`
 	Database        string `yaml:"database"`
+	SSLMode         string `yaml:"ssl_mode"` // SSL mode (disable, require, verify-ca, verify-full)
 	MaxConns        int32  `yaml:"max_conns"`
 	MinConns        int32  `yaml:"min_conns"`
 	MaxConnLifetime string `yaml:"max_conn_lifetime"`
@@ -48,6 +50,14 @@ func (p *PostgresConfig) GetMaxConnLifetime() time.Duration {
 	return d
 }
 
+// GetSSLMode 取得 SSL 模式，如果未設定則返回 "disable"
+func (p *PostgresConfig) GetSSLMode() string {
+	if p.SSLMode == "" {
+		return "disable" // 開發環境默認值
+	}
+	return p.SSLMode
+}
+
 // RedisConfig 定義 Redis 連接配置
 type RedisConfig struct {
 	Host     string `yaml:"host"`
@@ -55,6 +65,14 @@ type RedisConfig struct {
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
 	PoolSize int    `yaml:"pool_size"`
+}
+
+// GetDefaultCurrency 取得默認貨幣，如果未設定則返回 "USD"
+func (c *Config) GetDefaultCurrency() string {
+	if c.Game.DefaultCurrency == "" {
+		return "USD" // 默認貨幣
+	}
+	return c.Game.DefaultCurrency
 }
 
 func LoadConfig(path string) (*Config, error) {

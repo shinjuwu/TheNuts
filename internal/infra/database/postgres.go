@@ -20,12 +20,13 @@ type PostgresDB struct {
 func NewPostgresPool(ctx context.Context, cfg config.PostgresConfig, logger *zap.Logger) (*PostgresDB, error) {
 	// 構建連接字符串
 	dsn := fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		cfg.User,
 		cfg.Password,
 		cfg.Host,
 		cfg.Port,
 		cfg.Database,
+		cfg.GetSSLMode(),
 	)
 
 	// 配置連接池
