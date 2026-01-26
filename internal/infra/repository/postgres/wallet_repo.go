@@ -1,0 +1,377 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shinjuwu/TheNuts/internal/infra/repository"
+)
+
+// WalletRepo 實作 repository.WalletRepository
+type WalletRepo struct {
+	pool   *pgxpool.Pool
+	txRepo *TransactionRepo
+}
+
+// NewWalletRepository 創建新的 Wallet Repository
+func NewWalletRepository(pool *pgxpool.Pool, txRepo *TransactionRepo) repository.WalletRepository {
+	return &WalletRepo{
+		pool:   pool,
+		txRepo: txRepo,
+	}
+}
+
+// Create 創建新錢包
+func (r *WalletRepo) Create(ctx context.Context, wallet *repository.Wallet) error {
+	query := `
+		INSERT INTO wallets (
+			id, player_id, balance, locked_balance, 
+			currency, version, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8
+		)
+	`
+
+	now := time.Now()
+	wallet.CreatedAt = now
+	wallet.UpdatedAt = now
+	wallet.Version = 1
+
+	if wallet.Currency == "" {
+		wallet.Currency = "USD"
+	}
+
+	if wallet.ID == uuid.Nil {
+		wallet.ID = uuid.New()
+	}
+
+	_, err := r.pool.Exec(ctx, query,
+		wallet.ID,
+		wallet.PlayerID,
+		wallet.Balance,
+		wallet.LockedBalance,
+		wallet.Currency,
+		wallet.Version,
+		wallet.CreatedAt,
+		wallet.UpdatedAt,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to create wallet: %w", err)
+	}
+
+	return nil
+}
+
+// GetByPlayerID 根據玩家 ID 查詢錢包
+func (r *WalletRepo) GetByPlayerID(ctx context.Context, playerID uuid.UUID) (*repository.Wallet, error) {
+	query := `
+		SELECT 
+			id, player_id, balance, locked_balance, 
+			currency, version, created_at, updated_at
+		FROM wallets
+		WHERE player_id = $1
+	`
+
+	wallet := &repository.Wallet{}
+	err := r.pool.QueryRow(ctx, query, playerID).Scan(
+		&wallet.ID,
+		&wallet.PlayerID,
+		&wallet.Balance,
+		&wallet.LockedBalance,
+		&wallet.Currency,
+		&wallet.Version,
+		&wallet.CreatedAt,
+		&wallet.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("wallet not found: %w", err)
+		}
+		return nil, fmt.Errorf("failed to get wallet: %w", err)
+	}
+
+	return wallet, nil
+}
+
+// GetWithLock 使用行鎖查詢錢包（用於事務中）
+func (r *WalletRepo) GetWithLock(ctx context.Context, tx repository.Transaction, playerID uuid.UUID) (*repository.Wallet, error) {
+	query := `
+		SELECT 
+			id, player_id, balance, locked_balance, 
+			currency, version, created_at, updated_at
+		FROM wallets
+		WHERE player_id = $1
+		FOR UPDATE
+	`
+
+	pgTx := tx.(*PgTransaction).GetTx()
+
+	wallet := &repository.Wallet{}
+	err := pgTx.QueryRow(ctx, query, playerID).Scan(
+		&wallet.ID,
+		&wallet.PlayerID,
+		&wallet.Balance,
+		&wallet.LockedBalance,
+		&wallet.Currency,
+		&wallet.Version,
+		&wallet.CreatedAt,
+		&wallet.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("wallet not found: %w", err)
+		}
+		return nil, fmt.Errorf("failed to get wallet with lock: %w", err)
+	}
+
+	return wallet, nil
+}
+
+// Credit 入帳（加錢）
+func (r *WalletRepo) Credit(ctx context.Context, tx repository.Transaction, playerID uuid.UUID, amount int64, txType repository.TransactionType, description string, idempotencyKey string) error {
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+
+	// 檢查冪等性
+	if idempotencyKey != "" {
+		existing, err := r.txRepo.GetByIdempotencyKey(ctx, idempotencyKey)
+		if err == nil && existing != nil {
+			// 交易已存在，直接返回（冪等性保證）
+			return nil
+		}
+	}
+
+	// 鎖定錢包
+	wallet, err := r.GetWithLock(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// 記錄交易前餘額
+	balanceBefore := wallet.Balance
+
+	// 更新錢包餘額
+	updateQuery := `
+		UPDATE wallets SET
+			balance = balance + $2,
+			version = version + 1,
+			updated_at = $3
+		WHERE player_id = $1 AND version = $4
+	`
+
+	pgTx := tx.(*PgTransaction).GetTx()
+	result, err := pgTx.Exec(ctx, updateQuery,
+		playerID,
+		amount,
+		time.Now(),
+		wallet.Version,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to credit wallet: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("wallet version conflict (optimistic lock)")
+	}
+
+	// 創建交易記錄
+	transaction := &repository.WalletTransaction{
+		ID:            uuid.New(),
+		WalletID:      wallet.ID,
+		Type:          txType,
+		Amount:        amount,
+		BalanceBefore: balanceBefore,
+		BalanceAfter:  balanceBefore + amount,
+		Description:   description,
+		CreatedAt:     time.Now(),
+	}
+
+	if idempotencyKey != "" {
+		transaction.IdempotencyKey = &idempotencyKey
+	}
+
+	if err := r.txRepo.CreateWithTx(ctx, pgTx, transaction); err != nil {
+		return fmt.Errorf("failed to create transaction record: %w", err)
+	}
+
+	return nil
+}
+
+// Debit 出帳（扣錢）
+func (r *WalletRepo) Debit(ctx context.Context, tx repository.Transaction, playerID uuid.UUID, amount int64, txType repository.TransactionType, description string, idempotencyKey string) error {
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+
+	// 檢查冪等性
+	if idempotencyKey != "" {
+		existing, err := r.txRepo.GetByIdempotencyKey(ctx, idempotencyKey)
+		if err == nil && existing != nil {
+			// 交易已存在，直接返回（冪等性保證）
+			return nil
+		}
+	}
+
+	// 鎖定錢包
+	wallet, err := r.GetWithLock(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// 檢查餘額充足
+	if wallet.Balance < amount {
+		return fmt.Errorf("insufficient balance: have %d, need %d", wallet.Balance, amount)
+	}
+
+	// 記錄交易前餘額
+	balanceBefore := wallet.Balance
+
+	// 更新錢包餘額
+	updateQuery := `
+		UPDATE wallets SET
+			balance = balance - $2,
+			version = version + 1,
+			updated_at = $3
+		WHERE player_id = $1 AND version = $4 AND balance >= $2
+	`
+
+	pgTx := tx.(*PgTransaction).GetTx()
+	result, err := pgTx.Exec(ctx, updateQuery,
+		playerID,
+		amount,
+		time.Now(),
+		wallet.Version,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to debit wallet: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("wallet version conflict or insufficient balance")
+	}
+
+	// 創建交易記錄
+	transaction := &repository.WalletTransaction{
+		ID:            uuid.New(),
+		WalletID:      wallet.ID,
+		Type:          txType,
+		Amount:        -amount, // 負數表示扣款
+		BalanceBefore: balanceBefore,
+		BalanceAfter:  balanceBefore - amount,
+		Description:   description,
+		CreatedAt:     time.Now(),
+	}
+
+	if idempotencyKey != "" {
+		transaction.IdempotencyKey = &idempotencyKey
+	}
+
+	if err := r.txRepo.CreateWithTx(ctx, pgTx, transaction); err != nil {
+		return fmt.Errorf("failed to create transaction record: %w", err)
+	}
+
+	return nil
+}
+
+// LockBalance 鎖定餘額（用於下注等場景）
+func (r *WalletRepo) LockBalance(ctx context.Context, tx repository.Transaction, playerID uuid.UUID, amount int64) error {
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+
+	// 鎖定錢包
+	wallet, err := r.GetWithLock(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// 檢查餘額充足
+	if wallet.Balance < amount {
+		return fmt.Errorf("insufficient balance: have %d, need %d", wallet.Balance, amount)
+	}
+
+	// 將餘額轉移到鎖定餘額
+	updateQuery := `
+		UPDATE wallets SET
+			balance = balance - $2,
+			locked_balance = locked_balance + $2,
+			version = version + 1,
+			updated_at = $3
+		WHERE player_id = $1 AND version = $4 AND balance >= $2
+	`
+
+	pgTx := tx.(*PgTransaction).GetTx()
+	result, err := pgTx.Exec(ctx, updateQuery,
+		playerID,
+		amount,
+		time.Now(),
+		wallet.Version,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to lock balance: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("wallet version conflict or insufficient balance")
+	}
+
+	return nil
+}
+
+// UnlockBalance 解鎖餘額（遊戲結束後）
+func (r *WalletRepo) UnlockBalance(ctx context.Context, tx repository.Transaction, playerID uuid.UUID, amount int64) error {
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+
+	// 鎖定錢包
+	wallet, err := r.GetWithLock(ctx, tx, playerID)
+	if err != nil {
+		return err
+	}
+
+	// 檢查鎖定餘額充足
+	if wallet.LockedBalance < amount {
+		return fmt.Errorf("insufficient locked balance: have %d, need %d", wallet.LockedBalance, amount)
+	}
+
+	// 將鎖定餘額轉回可用餘額
+	updateQuery := `
+		UPDATE wallets SET
+			balance = balance + $2,
+			locked_balance = locked_balance - $2,
+			version = version + 1,
+			updated_at = $3
+		WHERE player_id = $1 AND version = $4 AND locked_balance >= $2
+	`
+
+	pgTx := tx.(*PgTransaction).GetTx()
+	result, err := pgTx.Exec(ctx, updateQuery,
+		playerID,
+		amount,
+		time.Now(),
+		wallet.Version,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to unlock balance: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("wallet version conflict or insufficient locked balance")
+	}
+
+	return nil
+}

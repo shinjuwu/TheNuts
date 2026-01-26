@@ -10,6 +10,8 @@ import (
 func InitApp(configPath string) (*App, error) {
 	wire.Build(
 		InfrastructureSet,
+		DatabaseSet,
+		RepositorySet,
 		AuthSet,
 		GameSet,
 		wire.Struct(new(App), "*"),

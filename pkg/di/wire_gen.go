@@ -30,15 +30,35 @@ func InitApp(configPath string) (*App, error) {
 	handler := ws.NewHandler(hub, tableManager, ticketStore, zapLogger)
 	jwtService := ProvideJWTService(configConfig)
 	authHandler := ProvideAuthHandler(jwtService, ticketStore, configConfig, zapLogger)
+	postgresDB, err := ProvidePostgresDB(configConfig, zapLogger)
+	if err != nil {
+		return nil, err
+	}
+	redisClient, err := ProvideRedisClient(configConfig, zapLogger)
+	if err != nil {
+		return nil, err
+	}
+	unitOfWork := ProvideUnitOfWork(postgresDB)
+	accountRepository := ProvideAccountRepository(postgresDB)
+	playerRepository := ProvidePlayerRepository(postgresDB)
+	transactionRepo := ProvideTransactionRepository(postgresDB)
+	walletRepository := ProvideWalletRepository(postgresDB, transactionRepo)
 	app := &App{
-		Config:       configConfig,
-		Logger:       zapLogger,
-		TableManager: tableManager,
-		Hub:          hub,
-		WSHandler:    handler,
-		JWTService:   jwtService,
-		TicketStore:  ticketStore,
-		AuthHandler:  authHandler,
+		Config:          configConfig,
+		Logger:          zapLogger,
+		TableManager:    tableManager,
+		Hub:             hub,
+		WSHandler:       handler,
+		JWTService:      jwtService,
+		TicketStore:     ticketStore,
+		AuthHandler:     authHandler,
+		PostgresDB:      postgresDB,
+		RedisClient:     redisClient,
+		UnitOfWork:      unitOfWork,
+		AccountRepo:     accountRepository,
+		PlayerRepo:      playerRepository,
+		WalletRepo:      walletRepository,
+		TransactionRepo: transactionRepo,
 	}
 	return app, nil
 }

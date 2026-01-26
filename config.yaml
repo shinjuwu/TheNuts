@@ -6,6 +6,24 @@ auth:
   jwt_secret: "your-secret-key-change-in-production" # ⚠️ 生產環境必須更換為安全的密鑰
   ticket_ttl_seconds: 30 # 票券有效期（秒）
 
+database:
+  postgres:
+    host: localhost
+    port: 5432
+    user: thenuts
+    password: devpassword
+    database: thenuts
+    max_conns: 25
+    min_conns: 5
+    max_conn_lifetime: 5m
+    
+  redis:
+    host: localhost
+    port: 6382  # 注意：使用 6382 避免端口冲突
+    password: ""
+    db: 0
+    pool_size: 10
+
 game:
   min_players: 2
   max_players: 9

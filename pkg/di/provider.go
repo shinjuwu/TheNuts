@@ -1,6 +1,7 @@
 package di
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/wire"
@@ -8,7 +9,10 @@ import (
 	"github.com/shinjuwu/TheNuts/internal/game"
 	"github.com/shinjuwu/TheNuts/internal/game/adapter/ws"
 	"github.com/shinjuwu/TheNuts/internal/infra/config"
+	"github.com/shinjuwu/TheNuts/internal/infra/database"
 	"github.com/shinjuwu/TheNuts/internal/infra/logger"
+	"github.com/shinjuwu/TheNuts/internal/infra/repository"
+	"github.com/shinjuwu/TheNuts/internal/infra/repository/postgres"
 	"go.uber.org/zap"
 )
 
@@ -16,6 +20,21 @@ import (
 var InfrastructureSet = wire.NewSet(
 	config.LoadConfig,
 	logger.NewLogger,
+)
+
+// DatabaseSet 包含資料庫相關的 Providers
+var DatabaseSet = wire.NewSet(
+	ProvidePostgresDB,
+	ProvideRedisClient,
+	ProvideUnitOfWork,
+)
+
+// RepositorySet 包含 Repository 相關的 Providers
+var RepositorySet = wire.NewSet(
+	ProvideAccountRepository,
+	ProvidePlayerRepository,
+	ProvideTransactionRepository,
+	ProvideWalletRepository,
 )
 
 // AuthSet 包含認證模組的 Providers
@@ -58,4 +77,49 @@ func ProvideAuthHandler(
 	}
 
 	return handler
+}
+
+// ProvidePostgresDB 提供 PostgreSQL 連接池
+func ProvidePostgresDB(cfg *config.Config, logger *zap.Logger) (*database.PostgresDB, error) {
+	ctx := context.Background()
+	db, err := database.NewPostgresPool(ctx, cfg.Database.Postgres, logger)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+// ProvideRedisClient 提供 Redis 客戶端
+func ProvideRedisClient(cfg *config.Config, logger *zap.Logger) (*database.RedisClient, error) {
+	ctx := context.Background()
+	client, err := database.NewRedisClient(ctx, cfg.Database.Redis, logger)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// ProvideUnitOfWork 提供工作單元
+func ProvideUnitOfWork(db *database.PostgresDB) repository.UnitOfWork {
+	return postgres.NewUnitOfWork(db.Pool)
+}
+
+// ProvideAccountRepository 提供 Account Repository
+func ProvideAccountRepository(db *database.PostgresDB) repository.AccountRepository {
+	return postgres.NewAccountRepository(db.Pool)
+}
+
+// ProvidePlayerRepository 提供 Player Repository
+func ProvidePlayerRepository(db *database.PostgresDB) repository.PlayerRepository {
+	return postgres.NewPlayerRepository(db.Pool)
+}
+
+// ProvideTransactionRepository 提供 Transaction Repository
+func ProvideTransactionRepository(db *database.PostgresDB) *postgres.TransactionRepo {
+	return postgres.NewTransactionRepository(db.Pool)
+}
+
+// ProvideWalletRepository 提供 Wallet Repository
+func ProvideWalletRepository(db *database.PostgresDB, txRepo *postgres.TransactionRepo) repository.WalletRepository {
+	return postgres.NewWalletRepository(db.Pool, txRepo)
 }

@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: thenuts-postgres
+    environment:
+      POSTGRES_USER: thenuts
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: thenuts
+      # 性能优化
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      # 持久化数据
+      - postgres_data:/var/lib/postgresql/data
+      # 初始化脚本 (可选)
+      # - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thenuts -d thenuts"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - thenuts-network
+    restart: unless-stopped
+    # 性能优化配置
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "default_statistics_target=100"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "work_mem=2MB"
+      - "-c"
+      - "min_wal_size=1GB"
+      - "-c"
+      - "max_wal_size=4GB"
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: thenuts-redis
+    ports:
+      - "6382:6379"  # 使用 6382 避免端口冲突
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - thenuts-network
+    restart: unless-stopped
+    # Redis 配置
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+
+  # pgAdmin (可选 - 数据库管理界面)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: thenuts-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@thenuts.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - thenuts-network
+    restart: unless-stopped
+
+  # Redis Commander (可选 - Redis 管理界面)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: thenuts-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - thenuts-network
+    restart: unless-stopped
+
+# 数据卷
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# 网络
+networks:
+  thenuts-network:
+    driver: bridge
