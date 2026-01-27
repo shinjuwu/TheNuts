@@ -2,3 +2,15 @@
 *.exe
 *.bin
 .env
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Runtime files
+*.pid
+NUL
+
+# Test output
+test_ws_client.js
+
