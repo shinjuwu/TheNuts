@@ -176,5 +176,5 @@ func ProvideWSHandler(
 	ticketStore auth.TicketStore,
 	logger *zap.Logger,
 ) *ws.Handler {
-	return ProvideWSHandler(hub, tableMgr, sessionMgr, gameService, ticketStore, logger)
+	return ws.NewHandler(hub, tableMgr, sessionMgr, gameService, ticketStore, logger)
 }
