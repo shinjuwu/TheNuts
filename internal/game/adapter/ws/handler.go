@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/shinjuwu/TheNuts/internal/auth"
 	"github.com/shinjuwu/TheNuts/internal/game"
+	"github.com/shinjuwu/TheNuts/internal/game/service"
 	"go.uber.org/zap"
 )
 
@@ -23,18 +25,29 @@ var upgrader = websocket.Upgrader{
 }
 
 type Handler struct {
-	Hub          *Hub
-	TableManager *game.TableManager
-	TicketStore  auth.TicketStore
-	Logger       *zap.Logger
+	Hub            *Hub
+	TableManager   *game.TableManager
+	SessionManager *SessionManager
+	GameService    *service.GameService
+	TicketStore    auth.TicketStore
+	Logger         *zap.Logger
 }
 
-func NewHandler(hub *Hub, tableMgr *game.TableManager, ticketStore auth.TicketStore, logger *zap.Logger) *Handler {
+func NewHandler(
+	hub *Hub,
+	tableMgr *game.TableManager,
+	sessionMgr *SessionManager,
+	gameService *service.GameService,
+	ticketStore auth.TicketStore,
+	logger *zap.Logger,
+) *Handler {
 	return &Handler{
-		Hub:          hub,
-		TableManager: tableMgr,
-		TicketStore:  ticketStore,
-		Logger:       logger,
+		Hub:            hub,
+		TableManager:   tableMgr,
+		SessionManager: sessionMgr,
+		GameService:    gameService,
+		TicketStore:    ticketStore,
+		Logger:         logger,
 	}
 }
 
@@ -70,8 +83,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 創建客戶端並註冊
+	// 解析 player UUID
+	playerUUID, err := uuid.Parse(playerID)
+	if err != nil {
+		h.Logger.Error("invalid player ID format", zap.String("player_id", playerID), zap.Error(err))
+		conn.Close()
+		return
+	}
+
+	// 創建客戶端
 	client := NewClient(h.Hub, h.TableManager, conn, playerID, h.Logger)
+
+	// 創建 PlayerSession
+	session := NewPlayerSession(playerUUID, playerID, client, h.GameService, h.Logger)
+	h.SessionManager.AddSession(session)
+
+	// 註冊客戶端到 Hub
 	h.Hub.register <- client
 
 	h.Logger.Info("websocket client connected",

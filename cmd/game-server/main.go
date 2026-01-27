@@ -32,6 +32,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// 認證路由（公開）
+	mux.HandleFunc("/api/auth/register", app.AuthHandler.HandleRegister)
 	mux.HandleFunc("/api/auth/login", app.AuthHandler.HandleLogin)
 
 	// 票券路由（需要 JWT 認證）

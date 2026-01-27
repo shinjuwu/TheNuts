@@ -6,6 +6,7 @@ import (
 	"github.com/shinjuwu/TheNuts/internal/auth"
 	"github.com/shinjuwu/TheNuts/internal/game"
 	"github.com/shinjuwu/TheNuts/internal/game/adapter/ws"
+	"github.com/shinjuwu/TheNuts/internal/game/service"
 	"github.com/shinjuwu/TheNuts/internal/infra/config"
 	"github.com/shinjuwu/TheNuts/internal/infra/database"
 	"github.com/shinjuwu/TheNuts/internal/infra/repository"
@@ -24,6 +25,7 @@ type App struct {
 	// 認證相關
 	JWTService  *auth.JWTService
 	TicketStore auth.TicketStore
+	AuthService *auth.AuthService
 	AuthHandler *auth.Handler
 
 	// 資料庫相關
@@ -36,9 +38,19 @@ type App struct {
 	PlayerRepo      repository.PlayerRepository
 	WalletRepo      repository.WalletRepository
 	TransactionRepo *postgres.TransactionRepo
+	SessionRepo     repository.GameSessionRepository
+
+	// Service 相關
+	GameService    *service.GameService
+	SessionManager *ws.SessionManager
 }
 
 func (a *App) Stop(ctx context.Context) {
+	// 停止 SessionManager
+	if a.SessionManager != nil {
+		a.SessionManager.Stop()
+	}
+
 	// 關閉票券儲存
 	if a.TicketStore != nil {
 		_ = a.TicketStore.Close()

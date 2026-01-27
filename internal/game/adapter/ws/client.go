@@ -66,12 +66,11 @@ func (c *Client) ReadPump() {
 		}
 
 		// 路由到對應的桌子
-		// 路由到對應的桌子
 		if req.TableID != "" {
 			table := c.TableManager.GetTable(req.TableID)
 			if table != nil {
 				// DTO -> Domain Entity 轉換 (Translator)
-				actionType := mapActionType(req.Action)
+				actionType := MapActionType(req.Action)
 				playerAction := domain.PlayerAction{
 					PlayerID: c.PlayerID,
 					Type:     actionType,
@@ -80,27 +79,6 @@ func (c *Client) ReadPump() {
 				table.ActionCh <- playerAction
 			}
 		}
-	}
-}
-
-// mapActionType 將前端字串轉換為 Domain Enum
-// 這是 Adapter 層的核心職責之一
-func mapActionType(action string) domain.ActionType {
-	switch action {
-	case "FOLD":
-		return domain.ActionFold
-	case "CHECK":
-		return domain.ActionCheck
-	case "CALL":
-		return domain.ActionCall
-	case "BET":
-		return domain.ActionBet
-	case "RAISE":
-		return domain.ActionRaise
-	case "ALL_IN":
-		return domain.ActionAllIn
-	default:
-		return domain.ActionFold // 預設或錯誤處理
 	}
 }
 

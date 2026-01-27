@@ -13,6 +13,7 @@ func InitApp(configPath string) (*App, error) {
 		DatabaseSet,
 		RepositorySet,
 		AuthSet,
+		ServiceSet,
 		GameSet,
 		wire.Struct(new(App), "*"),
 	)

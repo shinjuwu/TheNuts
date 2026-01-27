@@ -13,15 +13,17 @@ import (
 type Handler struct {
 	jwtService  *JWTService
 	ticketStore TicketStore
+	authService *AuthService
 	logger      *zap.Logger
 	ticketTTL   time.Duration // 票券有效期（預設 30 秒）
 }
 
 // NewHandler 創建認證 Handler
-func NewHandler(jwtService *JWTService, ticketStore TicketStore, logger *zap.Logger) *Handler {
+func NewHandler(jwtService *JWTService, ticketStore TicketStore, authService *AuthService, logger *zap.Logger) *Handler {
 	return &Handler{
 		jwtService:  jwtService,
 		ticketStore: ticketStore,
+		authService: authService,
 		logger:      logger,
 		ticketTTL:   30 * time.Second, // 預設 30 秒
 	}
@@ -40,9 +42,32 @@ type LoginRequest struct {
 
 // LoginResponse 登入回應
 type LoginResponse struct {
-	Token    string `json:"token"`
-	PlayerID string `json:"player_id"`
+	Token       string `json:"token"`
+	PlayerID    string `json:"player_id"`
+	AccountID   string `json:"account_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
+// RegisterRequest 注册请求
+type RegisterRequest struct {
 	Username string `json:"username"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// RegisterResponse 注册回应
+type RegisterResponse struct {
+	AccountID string `json:"account_id"`
+	PlayerID  string `json:"player_id"`
+	Username  string `json:"username"`
+	Message   string `json:"message"`
+}
+
+// ErrorResponse 错误回应
+type ErrorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
 }
 
 // TicketRequest 票券請求（需要帶上 JWT Token）
@@ -58,8 +83,8 @@ type TicketResponse struct {
 	WSUrl     string `json:"ws_url"`
 }
 
-// HandleLogin 處理登入請求（開發階段簡化版）
-// 生產環境應該驗證密碼、查詢數據庫等
+// HandleLogin 處理登入請求（生產環境版本）
+// 使用真實的用户数据库验证和 bcrypt 密码验证
 func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -68,43 +93,54 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		h.writeErrorResponse(w, http.StatusBadRequest, "invalid_request", "Invalid request body")
 		return
 	}
 
 	// 驗證輸入
 	if req.Username == "" || req.Password == "" {
-		http.Error(w, "username and password are required", http.StatusBadRequest)
+		h.writeErrorResponse(w, http.StatusBadRequest, "invalid_request", "Username and password are required")
 		return
 	}
 
-	// ⚠️ 開發階段：簡化的身份驗證
-	// 生產環境應該：
-	// 1. 查詢數據庫驗證使用者
-	// 2. 使用 bcrypt 驗證密碼雜湊
-	// 3. 實作帳號鎖定、速率限制等安全措施
+	// 获取客户端 IP 地址
+	ipAddress := getClientIP(r)
 
-	// 為了演示，接受任何非空的使用者名稱/密碼
-	playerID := "player_" + req.Username // 簡化的 ID 生成
+	// 使用 AuthService 进行身份验证
+	account, player, err := h.authService.Authenticate(r.Context(), req.Username, req.Password, ipAddress)
+	if err != nil {
+		// 根据错误类型返回不同的状态码
+		switch err {
+		case ErrInvalidCredentials:
+			h.writeErrorResponse(w, http.StatusUnauthorized, "invalid_credentials", "Invalid username or password")
+		case ErrAccountLocked:
+			h.writeErrorResponse(w, http.StatusForbidden, "account_locked", "Account is temporarily locked due to too many failed login attempts")
+		case ErrAccountSuspended:
+			h.writeErrorResponse(w, http.StatusForbidden, "account_suspended", "Account has been suspended")
+		case ErrAccountBanned:
+			h.writeErrorResponse(w, http.StatusForbidden, "account_banned", "Account has been banned")
+		default:
+			h.logger.Error("authentication failed", zap.Error(err))
+			h.writeErrorResponse(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+		}
+		return
+	}
 
 	// 生成 JWT Token（有效期 24 小時）
-	token, err := h.jwtService.GenerateToken(playerID, req.Username, 24*time.Hour)
+	token, err := h.jwtService.GenerateToken(player.ID.String(), account.Username, 24*time.Hour)
 	if err != nil {
 		h.logger.Error("failed to generate token", zap.Error(err))
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		h.writeErrorResponse(w, http.StatusInternalServerError, "internal_error", "Failed to generate token")
 		return
 	}
 
-	h.logger.Info("user logged in",
-		zap.String("username", req.Username),
-		zap.String("player_id", playerID),
-	)
-
-	// 返回 Token
+	// 返回 Token 和用户信息
 	resp := LoginResponse{
-		Token:    token,
-		PlayerID: playerID,
-		Username: req.Username,
+		Token:       token,
+		PlayerID:    player.ID.String(),
+		AccountID:   account.ID.String(),
+		Username:    account.Username,
+		DisplayName: player.DisplayName,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -166,4 +202,79 @@ func (h *Handler) HandleGetTicket(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// HandleRegister 处理注册请求
+func (h *Handler) HandleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req RegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeErrorResponse(w, http.StatusBadRequest, "invalid_request", "Invalid request body")
+		return
+	}
+
+	// 验证输入
+	if req.Username == "" || req.Email == "" || req.Password == "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "invalid_request", "Username, email and password are required")
+		return
+	}
+
+	// 注册用户
+	account, player, err := h.authService.Register(r.Context(), req.Username, req.Email, req.Password)
+	if err != nil {
+		switch err {
+		case ErrUsernameExists:
+			h.writeErrorResponse(w, http.StatusConflict, "username_exists", "Username already exists")
+		case ErrEmailExists:
+			h.writeErrorResponse(w, http.StatusConflict, "email_exists", "Email already exists")
+		default:
+			h.logger.Error("registration failed", zap.Error(err))
+			h.writeErrorResponse(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+		}
+		return
+	}
+
+	// 返回注册结果
+	resp := RegisterResponse{
+		AccountID: account.ID.String(),
+		PlayerID:  player.ID.String(),
+		Username:  account.Username,
+		Message:   "Registration successful. Please login.",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// writeErrorResponse 写入错误响应
+func (h *Handler) writeErrorResponse(w http.ResponseWriter, statusCode int, errorCode, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(ErrorResponse{
+		Error:   errorCode,
+		Message: message,
+	})
+}
+
+// getClientIP 获取客户端 IP 地址
+func getClientIP(r *http.Request) string {
+	// 尝试从 X-Forwarded-For 获取（如果使用了代理）
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded != "" {
+		return forwarded
+	}
+
+	// 尝试从 X-Real-IP 获取
+	realIP := r.Header.Get("X-Real-IP")
+	if realIP != "" {
+		return realIP
+	}
+
+	// 直接从 RemoteAddr 获取
+	return r.RemoteAddr
 }

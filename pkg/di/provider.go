@@ -8,6 +8,7 @@ import (
 	"github.com/shinjuwu/TheNuts/internal/auth"
 	"github.com/shinjuwu/TheNuts/internal/game"
 	"github.com/shinjuwu/TheNuts/internal/game/adapter/ws"
+	"github.com/shinjuwu/TheNuts/internal/game/service"
 	"github.com/shinjuwu/TheNuts/internal/infra/config"
 	"github.com/shinjuwu/TheNuts/internal/infra/database"
 	"github.com/shinjuwu/TheNuts/internal/infra/logger"
@@ -35,19 +36,27 @@ var RepositorySet = wire.NewSet(
 	ProvidePlayerRepository,
 	ProvideTransactionRepository,
 	ProvideWalletRepository,
+	ProvideGameSessionRepository,
 )
 
 // AuthSet 包含認證模組的 Providers
 var AuthSet = wire.NewSet(
 	ProvideJWTService,
 	ProvideTicketStore,
+	ProvideAuthService,
 	ProvideAuthHandler,
 )
 
+// ServiceSet 包含业务服务的 Providers
+var ServiceSet = wire.NewSet(
+	ProvideGameService,
+)
+
 var GameSet = wire.NewSet(
+	ProvideSessionManager,
 	game.NewTableManager,
 	ws.NewHub,
-	ws.NewHandler,
+	ProvideWSHandler,
 )
 
 // ProvideJWTService 提供 JWT 服務
@@ -62,14 +71,24 @@ func ProvideTicketStore() auth.TicketStore {
 	return auth.NewMemoryTicketStore()
 }
 
+// ProvideAuthService 提供认证服务
+func ProvideAuthService(
+	accountRepo repository.AccountRepository,
+	playerRepo repository.PlayerRepository,
+	logger *zap.Logger,
+) *auth.AuthService {
+	return auth.NewAuthService(accountRepo, playerRepo, logger)
+}
+
 // ProvideAuthHandler 提供認證 Handler
 func ProvideAuthHandler(
 	jwtService *auth.JWTService,
 	ticketStore auth.TicketStore,
+	authService *auth.AuthService,
 	cfg *config.Config,
 	logger *zap.Logger,
 ) *auth.Handler {
-	handler := auth.NewHandler(jwtService, ticketStore, logger)
+	handler := auth.NewHandler(jwtService, ticketStore, authService, logger)
 
 	// 設定票券 TTL
 	if cfg.Auth.TicketTTLSeconds > 0 {
@@ -122,4 +141,40 @@ func ProvideTransactionRepository(db *database.PostgresDB) *postgres.Transaction
 // ProvideWalletRepository 提供 Wallet Repository
 func ProvideWalletRepository(db *database.PostgresDB, txRepo *postgres.TransactionRepo) repository.WalletRepository {
 	return postgres.NewWalletRepository(db.Pool, txRepo)
+}
+
+// ProvideGameSessionRepository 提供 GameSession Repository
+func ProvideGameSessionRepository(db *database.PostgresDB) repository.GameSessionRepository {
+	return postgres.NewGameSessionRepository(db.Pool)
+}
+
+// ProvideGameService 提供 Game Service
+func ProvideGameService(
+	playerRepo repository.PlayerRepository,
+	walletRepo repository.WalletRepository,
+	sessionRepo repository.GameSessionRepository,
+	uow repository.UnitOfWork,
+	logger *zap.Logger,
+) *service.GameService {
+	return service.NewGameService(playerRepo, walletRepo, sessionRepo, uow, logger)
+}
+
+// ProvideSessionManager 提供 Session Manager
+func ProvideSessionManager(
+	gameService *service.GameService,
+	logger *zap.Logger,
+) *ws.SessionManager {
+	return ws.NewSessionManager(gameService, logger)
+}
+
+// ProvideWSHandler 提供 WebSocket Handler
+func ProvideWSHandler(
+	hub *ws.Hub,
+	tableMgr *game.TableManager,
+	sessionMgr *ws.SessionManager,
+	gameService *service.GameService,
+	ticketStore auth.TicketStore,
+	logger *zap.Logger,
+) *ws.Handler {
+	return ProvideWSHandler(hub, tableMgr, sessionMgr, gameService, ticketStore, logger)
 }

@@ -25,24 +25,28 @@ func InitApp(configPath string) (*App, error) {
 		return nil, err
 	}
 	tableManager := game.NewTableManager()
-	hub := ws.NewHub(zapLogger)
-	ticketStore := ProvideTicketStore()
-	handler := ws.NewHandler(hub, tableManager, ticketStore, zapLogger)
-	jwtService := ProvideJWTService(configConfig)
-	authHandler := ProvideAuthHandler(jwtService, ticketStore, configConfig, zapLogger)
 	postgresDB, err := ProvidePostgresDB(configConfig, zapLogger)
 	if err != nil {
 		return nil, err
 	}
+	playerRepository := ProvidePlayerRepository(postgresDB)
+	transactionRepo := ProvideTransactionRepository(postgresDB)
+	walletRepository := ProvideWalletRepository(postgresDB, transactionRepo)
+	gameSessionRepository := ProvideGameSessionRepository(postgresDB)
+	unitOfWork := ProvideUnitOfWork(postgresDB)
+	gameService := ProvideGameService(playerRepository, walletRepository, gameSessionRepository, unitOfWork, zapLogger)
+	sessionManager := ProvideSessionManager(gameService, zapLogger)
+	hub := ws.NewHub(sessionManager, zapLogger)
+	ticketStore := ProvideTicketStore()
+	handler := ProvideWSHandler(hub, tableManager, sessionManager, gameService, ticketStore, zapLogger)
+	jwtService := ProvideJWTService(configConfig)
+	accountRepository := ProvideAccountRepository(postgresDB)
+	authService := ProvideAuthService(accountRepository, playerRepository, zapLogger)
+	authHandler := ProvideAuthHandler(jwtService, ticketStore, authService, configConfig, zapLogger)
 	redisClient, err := ProvideRedisClient(configConfig, zapLogger)
 	if err != nil {
 		return nil, err
 	}
-	unitOfWork := ProvideUnitOfWork(postgresDB)
-	accountRepository := ProvideAccountRepository(postgresDB)
-	playerRepository := ProvidePlayerRepository(postgresDB)
-	transactionRepo := ProvideTransactionRepository(postgresDB)
-	walletRepository := ProvideWalletRepository(postgresDB, transactionRepo)
 	app := &App{
 		Config:          configConfig,
 		Logger:          zapLogger,
@@ -51,6 +55,7 @@ func InitApp(configPath string) (*App, error) {
 		WSHandler:       handler,
 		JWTService:      jwtService,
 		TicketStore:     ticketStore,
+		AuthService:     authService,
 		AuthHandler:     authHandler,
 		PostgresDB:      postgresDB,
 		RedisClient:     redisClient,
@@ -59,6 +64,9 @@ func InitApp(configPath string) (*App, error) {
 		PlayerRepo:      playerRepository,
 		WalletRepo:      walletRepository,
 		TransactionRepo: transactionRepo,
+		SessionRepo:     gameSessionRepository,
+		GameService:     gameService,
+		SessionManager:  sessionManager,
 	}
 	return app, nil
 }

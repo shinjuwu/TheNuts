@@ -4,12 +4,14 @@ import "time"
 
 // Request 代表前端發出的指令
 type Request struct {
-	Action    string    `json:"action"`
-	TableID   string    `json:"table_id,omitempty"`
-	PlayerID  string    `json:"player_id,omitempty"`
-	Amount    int64     `json:"amount,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-	TraceID   string    `json:"trace_id"`
+	Action     string    `json:"action"`
+	TableID    string    `json:"table_id,omitempty"`
+	PlayerID   string    `json:"player_id,omitempty"`
+	Amount     int64     `json:"amount,omitempty"`
+	SeatNo     int       `json:"seat_no,omitempty"`
+	GameAction string    `json:"game_action,omitempty"` // FOLD, CHECK, CALL, BET, RAISE, ALL_IN
+	Timestamp  time.Time `json:"timestamp"`
+	TraceID    string    `json:"trace_id"`
 }
 
 // Response 代表伺服器回傳的訊息

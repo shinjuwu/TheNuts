@@ -3,25 +3,28 @@ package ws
 import (
 	"sync"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 type Hub struct {
-	clients    map[string]*Client // key: PlayerID
-	register   chan *Client
-	unregister chan *Client
-	broadcast  chan interface{}
-	mu         sync.RWMutex
-	logger     *zap.Logger
+	clients        map[string]*Client
+	sessionManager *SessionManager
+	register       chan *Client
+	unregister     chan *Client
+	broadcast      chan interface{}
+	mu             sync.RWMutex
+	logger         *zap.Logger
 }
 
-func NewHub(logger *zap.Logger) *Hub {
+func NewHub(sessionManager *SessionManager, logger *zap.Logger) *Hub {
 	return &Hub{
-		clients:    make(map[string]*Client),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		broadcast:  make(chan interface{}),
-		logger:     logger,
+		clients:        make(map[string]*Client),
+		sessionManager: sessionManager,
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		broadcast:      make(chan interface{}),
+		logger:         logger,
 	}
 }
 
@@ -39,6 +42,12 @@ func (h *Hub) Run() {
 			if _, ok := h.clients[client.PlayerID]; ok {
 				delete(h.clients, client.PlayerID)
 				close(client.send)
+				
+				playerID, err := uuid.Parse(client.PlayerID)
+				if err == nil {
+					go h.sessionManager.HandleDisconnect(playerID)
+				}
+				
 				h.logger.Info("player disconnected", zap.String("player_id", client.PlayerID))
 			}
 			h.mu.Unlock()
@@ -49,8 +58,6 @@ func (h *Hub) Run() {
 				select {
 				case client.send <- message:
 				default:
-					// 如果發送失敗（通道滿），主動斷開或略過
-					// 這裡暫時略過
 				}
 			}
 			h.mu.RUnlock()
@@ -66,6 +73,22 @@ func (h *Hub) SendToPlayer(playerID string, message interface{}) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if client, ok := h.clients[playerID]; ok {
-		client.send <- message
+		select {
+		case client.send <- message:
+		default:
+			h.logger.Warn("failed to send to player", zap.String("player_id", playerID))
+		}
 	}
+}
+
+func (h *Hub) BroadcastToTable(tableID string, message interface{}) {
+	if h.sessionManager != nil {
+		h.sessionManager.BroadcastToTable(tableID, message)
+	}
+}
+
+func (h *Hub) GetConnectedPlayerCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
 }
