@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
+	"time"
 )
 
 type GameState int
@@ -40,6 +42,30 @@ func NewTable(id string) *Table {
 		CloseCh:  make(chan struct{}),
 		State:    StateIdle,
 	}
+}
+
+var ErrPlayerNotFound = errors.New("player not found at table")
+
+// PlayerSitDown 讓指定玩家坐下（SittingOut → Playing）
+// NOTE: 此方法直接操作 Players map，與 Table.Run() goroutine 存在潛在資料競爭。
+// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
+func (t *Table) PlayerSitDown(playerID string) error {
+	player, exists := t.Players[playerID]
+	if !exists {
+		return ErrPlayerNotFound
+	}
+	return player.SitDown()
+}
+
+// PlayerStandUp 讓指定玩家站起（→ SittingOut）
+// NOTE: 此方法直接操作 Players map，與 Table.Run() goroutine 存在潛在資料競爭。
+// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
+func (t *Table) PlayerStandUp(playerID string) (wasInHand bool, err error) {
+	player, exists := t.Players[playerID]
+	if !exists {
+		return false, ErrPlayerNotFound
+	}
+	return player.StandUp()
 }
 
 // StartHand 開始新的一手牌
@@ -206,13 +232,42 @@ func (t *Table) postBlindHeadsUp(smallBlindAmount, bigBlindAmount int64) {
 }
 
 func (t *Table) Run() {
+	// 創建定時器，每秒檢查是否可以開始新手牌
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case action := <-t.ActionCh:
 			t.handleAction(action)
+		case <-ticker.C:
+			// 定期檢查是否可以開始新手牌
+			t.tryStartNewHand()
 		case <-t.CloseCh:
 			return
 		}
+	}
+}
+
+// tryStartNewHand 檢查是否可以開始新手牌，如果可以則自動開局
+func (t *Table) tryStartNewHand() {
+	// 只在 Idle 狀態下嘗試開始新手牌
+	if t.State != StateIdle {
+		return
+	}
+
+	// 統計有多少玩家準備好（StatusPlaying）
+	readyPlayers := 0
+	for _, p := range t.Seats {
+		if p != nil && p.Status == StatusPlaying && p.Chips > 0 {
+			readyPlayers++
+		}
+	}
+
+	// 需要至少 2 個玩家才能開始
+	if readyPlayers >= 2 {
+		fmt.Printf("Auto-starting new hand with %d players\n", readyPlayers)
+		t.StartHand()
 	}
 }
 
@@ -350,7 +405,7 @@ func (t *Table) nextStreet() {
 			lastActivePlayer.ID, totalPot)
 
 		// 結束這手牌
-		t.State = StateIdle
+		t.endHand()
 		return
 	}
 
@@ -444,7 +499,59 @@ func (t *Table) Showdown() {
 		}
 	}
 
+	// 手牌結束，執行清理
+	t.endHand()
+}
+
+// endHand 結束當前手牌並準備下一手
+func (t *Table) endHand() {
+	fmt.Printf("=== Hand Complete ===\n")
+
+	// 移動 Dealer Button
+	t.rotateDealerButton()
+
+	// 重置玩家狀態
+	t.resetPlayersForNextHand()
+
 	// 設置狀態為 Idle，準備下一手牌
 	t.State = StateIdle
-	fmt.Printf("=== Hand Complete ===\n")
+}
+
+// rotateDealerButton 將 Dealer 位置移到下一個有效座位
+// 有效座位的條件：座位有人、有籌碼、未暫離（不考慮當前手牌狀態如 Folded）
+func (t *Table) rotateDealerButton() {
+	for i := 1; i <= 9; i++ {
+		pos := (t.DealerPos + i) % 9
+		// 檢查座位是否有人、有籌碼且未暫離
+		// 我們不使用 IsActive()，因為我們要包含 StatusFolded/StatusAllIn 的玩家
+		// 下一手牌開始時，這些狀態會被重置為 StatusPlaying
+		if p := t.Seats[pos]; p != nil && p.Chips > 0 && p.Status != StatusSittingOut {
+			t.DealerPos = pos
+			fmt.Printf("Dealer button moved to seat %d\n", t.DealerPos)
+			return
+		}
+	}
+	// 如果找不到有效座位，保持當前位置
+	fmt.Printf("No valid seat found for dealer rotation, keeping at seat %d\n", t.DealerPos)
+}
+
+// resetPlayersForNextHand 重置所有玩家狀態以準備下一手牌
+func (t *Table) resetPlayersForNextHand() {
+	for _, p := range t.Players {
+		// 清除手牌
+		p.HoleCards = nil
+		p.CurrentBet = 0
+		p.HasActed = false
+
+		// 重置狀態：Folded/AllIn → Playing (如果不是 SittingOut)
+		if p.Status == StatusFolded || p.Status == StatusAllIn {
+			if p.Chips > 0 {
+				p.Status = StatusPlaying
+			} else {
+				// 籌碼為 0，自動站起
+				p.Status = StatusSittingOut
+				fmt.Printf("Player %s has no chips, sitting out\n", p.ID)
+			}
+		}
+	}
 }

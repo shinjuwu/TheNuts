@@ -110,3 +110,93 @@ func TestFoldLogic(t *testing.T) {
 		t.Errorf("Expected next pos 1, got %d", table.CurrentPos)
 	}
 }
+
+// TestDealerRotationWithFoldedPlayer 測試 Dealer Button 應該移動到下一個有籌碼的玩家
+// 即使該玩家當前狀態是 StatusFolded
+func TestDealerRotationWithFoldedPlayer(t *testing.T) {
+	table := NewTable("dealer-rotation-test")
+
+	// 設置 3 個玩家在座位 0, 1, 2
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusFolded} // Folded 但有籌碼
+	p3 := &Player{ID: "p3", SeatIdx: 2, Chips: 1000, Status: StatusPlaying}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Seats[2] = p3
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Players["p3"] = p3
+
+	// 設置當前 Dealer 在座位 0
+	table.DealerPos = 0
+
+	// 調用 rotateDealerButton
+	table.rotateDealerButton()
+
+	// 預期結果：Dealer 應該移動到座位 1（即使 p2 是 Folded）
+	// 因為 p2 有籌碼且不是 SittingOut，下一手牌時 p2 會重置為 Playing
+	if table.DealerPos != 1 {
+		t.Errorf("Expected dealer at seat 1, got seat %d. "+
+			"Dealer should rotate to next player with chips, regardless of Folded status",
+			table.DealerPos)
+	}
+}
+
+// TestDealerRotationSkipsSittingOut 測試 Dealer Button 應該跳過 SittingOut 的玩家
+func TestDealerRotationSkipsSittingOut(t *testing.T) {
+	table := NewTable("dealer-rotation-test-2")
+
+	// 設置 3 個玩家在座位 0, 1, 2
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusSittingOut} // 暫離
+	p3 := &Player{ID: "p3", SeatIdx: 2, Chips: 1000, Status: StatusPlaying}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Seats[2] = p3
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Players["p3"] = p3
+
+	// 設置當前 Dealer 在座位 0
+	table.DealerPos = 0
+
+	// 調用 rotateDealerButton
+	table.rotateDealerButton()
+
+	// 預期結果：Dealer 應該跳過座位 1（SittingOut），移動到座位 2
+	if table.DealerPos != 2 {
+		t.Errorf("Expected dealer at seat 2 (skipping SittingOut player), got seat %d",
+			table.DealerPos)
+	}
+}
+
+// TestDealerRotationSkipsNoChips 測試 Dealer Button 應該跳過沒有籌碼的玩家
+func TestDealerRotationSkipsNoChips(t *testing.T) {
+	table := NewTable("dealer-rotation-test-3")
+
+	// 設置 3 個玩家在座位 0, 1, 2
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 0, Status: StatusPlaying} // 沒籌碼
+	p3 := &Player{ID: "p3", SeatIdx: 2, Chips: 1000, Status: StatusPlaying}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Seats[2] = p3
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Players["p3"] = p3
+
+	// 設置當前 Dealer 在座位 0
+	table.DealerPos = 0
+
+	// 調用 rotateDealerButton
+	table.rotateDealerButton()
+
+	// 預期結果：Dealer 應該跳過座位 1（沒籌碼），移動到座位 2
+	if table.DealerPos != 2 {
+		t.Errorf("Expected dealer at seat 2 (skipping no-chips player), got seat %d",
+			table.DealerPos)
+	}
+}
