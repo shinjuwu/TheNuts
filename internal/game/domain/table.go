@@ -112,8 +112,19 @@ func (t *Table) postBlinds() {
 	// 3人以上的標準情況:
 	// - DealerPos + 1 = 小盲 (Small Blind)
 	// - DealerPos + 2 = 大盲 (Big Blind)
-	sbPos := (t.DealerPos + 1) % 9
-	bbPos := (t.DealerPos + 2) % 9
+	// 需要跳過空座位
+
+	// 找小盲位置（Dealer 後第一個有效座位）
+	sbPos := t.findNextActiveSeat(t.DealerPos)
+	if sbPos == -1 {
+		return // 找不到有效座位
+	}
+
+	// 找大盲位置（小盲後第一個有效座位）
+	bbPos := t.findNextActiveSeat(sbPos)
+	if bbPos == -1 {
+		return // 找不到有效座位
+	}
 
 	// 收取小盲
 	if sb := t.Seats[sbPos]; sb != nil && sb.IsActive() {
@@ -194,14 +205,6 @@ func (t *Table) postBlindHeadsUp(smallBlindAmount, bigBlindAmount int64) {
 	}
 }
 
-// min 返回兩個 int64 中的較小值
-func min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (t *Table) Run() {
 	for {
 		select {
@@ -268,6 +271,27 @@ func (t *Table) handleAction(act PlayerAction) {
 		if player.Chips == 0 {
 			player.Status = StatusAllIn
 		}
+	case ActionAllIn:
+		// All-in: 玩家下注全部籌碼
+		if player.Chips == 0 {
+			return // Already all-in or no chips
+		}
+
+		totalBet := player.CurrentBet + player.Chips
+		player.Chips = 0
+		player.CurrentBet = totalBet
+		player.Status = StatusAllIn
+		player.HasActed = true
+
+		// 如果 All-in 金額超過當前最低下注額，重置其他玩家的 HasActed
+		if totalBet > t.MinBet {
+			t.MinBet = totalBet
+			for _, p := range t.Players {
+				if p.ID != player.ID && p.Status != StatusFolded && p.Status != StatusAllIn {
+					p.HasActed = false
+				}
+			}
+		}
 	}
 
 	// 3. 檢查回合是否結束
@@ -298,6 +322,38 @@ func (t *Table) isRoundComplete() bool {
 
 // nextStreet 進入下一階段
 func (t *Table) nextStreet() {
+	// 0. 檢查是否只剩一個未 Fold 的玩家（提前結束）
+	activePlayers := 0
+	var lastActivePlayer *Player
+	for _, p := range t.Players {
+		if p.IsActive() {
+			activePlayers++
+			lastActivePlayer = p
+		}
+	}
+
+	if activePlayers == 1 && lastActivePlayer != nil {
+		// 只剩一人，直接分配所有底池
+		// 先收集當前輪的下注
+		bets := make(map[string]int64)
+		for _, p := range t.Players {
+			if p.CurrentBet > 0 {
+				bets[p.ID] = p.CurrentBet
+			}
+		}
+		t.Pots.Accumulate(bets)
+
+		// 分配所有底池給最後一位玩家
+		totalPot := t.Pots.Total()
+		lastActivePlayer.Chips += totalPot
+		fmt.Printf("Player %s wins %d (all others folded)\n",
+			lastActivePlayer.ID, totalPot)
+
+		// 結束這手牌
+		t.State = StateIdle
+		return
+	}
+
 	// 1. 收集所有玩家本輪下注額到 PotManager
 	//    這會自動處理 Main Pot 和 Side Pots
 	bets := make(map[string]int64)
@@ -318,42 +374,28 @@ func (t *Table) nextStreet() {
 	switch t.State {
 	case StatePreFlop:
 		t.State = StateFlop
+		// Burn 一張牌
+		t.Deck.Draw(1)
 		// 發 3 張公牌
 		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(3)...)
 		fmt.Printf("Dealing Flop: %v\n", t.CommunityCards)
 	case StateFlop:
 		t.State = StateTurn
+		// Burn 一張牌
+		t.Deck.Draw(1)
 		// 發 1 張公牌 (Turn)
 		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
 		fmt.Printf("Dealing Turn: %v\n", t.CommunityCards)
 	case StateTurn:
 		t.State = StateRiver
+		// Burn 一張牌
+		t.Deck.Draw(1)
 		// 發 1 張公牌 (River)
 		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
 		fmt.Printf("Dealing River: %v\n", t.CommunityCards)
 	case StateRiver:
 		t.State = StateShowdown
-		// 結算
-		fmt.Println("Showdown!")
-		payouts := Distribute(t.Pots.Pots, t.Players, t.CommunityCards)
-
-		// 分配籌碼
-		for pid, amount := range payouts {
-			if p, ok := t.Players[pid]; ok {
-				p.Chips += amount
-				fmt.Printf("Player %s wins %d\n", pid, amount)
-			}
-		}
-
-		// 本局結束，重置或進入 Idle
-		// 這裡簡單切回 Idle，實際應用可能會有 StateHandEnd 等待時間
-		t.State = StateIdle
-
-		// TODO: 自動開始下一局? 還是等待外部指令?
-		// 為了測試方便，這裡暫時不自動 Loop
-	case StateShowdown:
-		t.State = StateIdle
-		// TODO: 重置遊戲
+		t.Showdown()
 	}
 
 	// 進入下一街後，行動權回到 Dealer 後第一位 Active 玩家
@@ -372,4 +414,37 @@ func (t *Table) moveToNextPlayer() {
 			return
 		}
 	}
+}
+
+// findNextActiveSeat 從指定位置開始找下一個有活躍玩家的座位
+// 返回座位索引，如果找不到返回 -1
+func (t *Table) findNextActiveSeat(startPos int) int {
+	for i := 1; i <= 9; i++ { // 從下一位開始找，最多找一圈
+		pos := (startPos + i) % 9
+		if p := t.Seats[pos]; p != nil && p.IsActive() {
+			return pos
+		}
+	}
+	return -1
+}
+
+// Showdown 執行攤牌邏輯並分配底池
+func (t *Table) Showdown() {
+	fmt.Printf("=== Showdown ===\n")
+
+	// 使用 Distribute 函數計算 payouts
+	payouts := Distribute(t.Pots.Pots, t.Players, t.CommunityCards)
+
+	// 將 payouts 加到玩家籌碼
+	for playerID, amount := range payouts {
+		if player, exists := t.Players[playerID]; exists {
+			player.Chips += amount
+			fmt.Printf("Player %s wins %d chips (final: %d)\n",
+				playerID, amount, player.Chips)
+		}
+	}
+
+	// 設置狀態為 Idle，準備下一手牌
+	t.State = StateIdle
+	fmt.Printf("=== Hand Complete ===\n")
 }

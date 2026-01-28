@@ -36,9 +36,13 @@ func TestFullGameFlow(t *testing.T) {
 	p2.HoleCards = []Card{NewCard(RankK, SuitSpade), NewCard(RankK, SuitHeart)}
 
 	// Override Deck for Community Cards
+	// 需要包含 burn cards: Burn+Flop(4), Burn+Turn(2), Burn+River(2) = 8 張
 	riggedCards := []Card{
+		NewCard(RankT, SuitClub),                                                // Burn before Flop
 		NewCard(Rank2, SuitClub), NewCard(Rank3, SuitClub), NewCard(Rank4, SuitClub), // Flop
+		NewCard(RankJ, SuitClub),    // Burn before Turn
 		NewCard(Rank5, SuitClub),    // Turn
+		NewCard(RankQ, SuitClub),    // Burn before River
 		NewCard(Rank9, SuitDiamond), // River
 	}
 	table.Deck.Cards = riggedCards

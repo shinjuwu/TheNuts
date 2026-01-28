@@ -29,8 +29,6 @@ func TestSimpleBettingRound(t *testing.T) {
 	p2.Chips -= 10
 	p3.CurrentBet = 20 // BB
 	p3.Chips -= 20
-	p3.CurrentBet = 20 // BB
-	p3.Chips -= 20
 	// table.Pots will be updated when round ends, so initially it's 0 or we manually accumulate for setup?
 	// For simple test, we rely on handleAction triggering nextStreet to accumulate.
 	// But lines 26-29 set up initial bets. `handleAction` will add MORE bets.

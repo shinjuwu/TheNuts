@@ -21,7 +21,9 @@ func Distribute(pots []*Pot, players map[string]*Player, board []Card) map[strin
 			}
 
 			// 結合手牌與公牌 (7張)
-			allCards := append(p.HoleCards, board...)
+			allCards := make([]Card, 0, len(p.HoleCards)+len(board))
+			allCards = append(allCards, p.HoleCards...)
+			allCards = append(allCards, board...)
 			// 如果不夠 5 張 (例如只有 Preflop)，只比 HoldCards?
 			// 根據規則，Preflop Allin 也要發完牌與公牌結合。
 			// 但如果狀態是 Preflop，board 是空的。

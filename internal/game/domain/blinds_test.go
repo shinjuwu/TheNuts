@@ -250,11 +250,30 @@ func TestPostBlinds_WithSittingOutPlayers(t *testing.T) {
 
 	// 驗證實際活躍玩家數 = 3 (P1, P3, P4)
 	// Dealer = Seat 0 (P1)
-	// SB = Seat 1 (P2, 但暫離，跳過)
-	// 實際 SB 應該是下一個活躍玩家
+	// findNextActiveSeat 跳過 P2 (暫離)
+	// SB = Seat 2 (P3)，BB = Seat 3 (P4)
 
-	// 注意：當前實現可能不處理跳過暫離玩家的邏輯
-	// 這個測試主要驗證暫離玩家不會被扣籌碼
+	if p3.CurrentBet != 10 {
+		t.Errorf("Expected SB (P3) bet 10, got %d", p3.CurrentBet)
+	}
+	if p3.Chips != 990 {
+		t.Errorf("Expected SB (P3) chips 990, got %d", p3.Chips)
+	}
+
+	if p4.CurrentBet != 20 {
+		t.Errorf("Expected BB (P4) bet 20, got %d", p4.CurrentBet)
+	}
+	if p4.Chips != 980 {
+		t.Errorf("Expected BB (P4) chips 980, got %d", p4.Chips)
+	}
+
+	// P1 (Button) should not be charged blinds
+	if p1.CurrentBet != 0 {
+		t.Errorf("Expected Button (P1) bet 0, got %d", p1.CurrentBet)
+	}
+	if p1.Chips != 1000 {
+		t.Errorf("Expected Button (P1) chips 1000, got %d", p1.Chips)
+	}
 }
 
 // TestMin 測試 min 輔助函數
