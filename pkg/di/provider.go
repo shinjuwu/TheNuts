@@ -54,10 +54,16 @@ var ServiceSet = wire.NewSet(
 
 var GameSet = wire.NewSet(
 	ProvideSessionManager,
-	game.NewTableManager,
+	// game.NewTableManager 依賴 GameService
+	ProvideTableManager,
 	ws.NewHub,
 	ProvideWSHandler,
 )
+
+// ProvideTableManager 提供 Table Manager (主要為了注入依賴)
+func ProvideTableManager(gs *service.GameService) *game.TableManager {
+	return game.NewTableManager(gs)
+}
 
 // ProvideJWTService 提供 JWT 服務
 func ProvideJWTService(cfg *config.Config) *auth.JWTService {

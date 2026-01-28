@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/shinjuwu/TheNuts/internal/game/core"
 	"github.com/shinjuwu/TheNuts/internal/game/domain"
@@ -25,11 +26,13 @@ type PokerEngine struct {
 type PokerEngineFactory struct{}
 
 func (f *PokerEngineFactory) Create(config core.GameConfig) (core.GameEngine, error) {
-	return &PokerEngine{
+	engine := &PokerEngine{
 		config:  config,
 		table:   domain.NewTable(config.GameID),
 		eventCh: make(chan core.GameEvent, 100),
-	}, nil
+	}
+	engine.table.OnHandComplete = engine.onHandComplete
+	return engine, nil
 }
 
 // GetType 實現 GameEngine 介面
@@ -44,6 +47,8 @@ func (e *PokerEngine) Initialize(config core.GameConfig) error {
 
 	e.config = config
 	e.table = domain.NewTable(config.GameID)
+	// Hook up the OnHandComplete callback
+	e.table.OnHandComplete = e.onHandComplete
 
 	// 從 CustomData 提取德撲專屬配置
 	if blinds, ok := config.CustomData["blinds"].(int64); ok {
@@ -51,6 +56,32 @@ func (e *PokerEngine) Initialize(config core.GameConfig) error {
 	}
 
 	return nil
+}
+
+// GetEventChannel 實現 GameEngine 介面
+func (e *PokerEngine) GetEventChannel() <-chan core.GameEvent {
+	return e.eventCh
+}
+
+// onHandComplete 手牌結束回調
+func (e *PokerEngine) onHandComplete(table *domain.Table) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 收集玩家籌碼
+	playerChips := make(map[string]int64)
+	for id, player := range table.Players {
+		playerChips[id] = player.Chips
+	}
+
+	e.BroadcastEvent(core.GameEvent{
+		EventType: core.EventHandComplete,
+		GameID:    table.ID,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"player_chips": playerChips,
+		},
+	})
 }
 
 // Start 實現 GameEngine 介面 - 啟動遊戲循環

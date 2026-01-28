@@ -7,7 +7,6 @@
 package di
 
 import (
-	"github.com/shinjuwu/TheNuts/internal/game"
 	"github.com/shinjuwu/TheNuts/internal/game/adapter/ws"
 	"github.com/shinjuwu/TheNuts/internal/infra/config"
 	"github.com/shinjuwu/TheNuts/internal/infra/logger"
@@ -24,7 +23,6 @@ func InitApp(configPath string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	tableManager := game.NewTableManager()
 	postgresDB, err := ProvidePostgresDB(configConfig, zapLogger)
 	if err != nil {
 		return nil, err
@@ -35,6 +33,7 @@ func InitApp(configPath string) (*App, error) {
 	gameSessionRepository := ProvideGameSessionRepository(postgresDB)
 	unitOfWork := ProvideUnitOfWork(postgresDB)
 	gameService := ProvideGameService(playerRepository, walletRepository, gameSessionRepository, unitOfWork, zapLogger)
+	tableManager := ProvideTableManager(gameService)
 	sessionManager := ProvideSessionManager(gameService, zapLogger)
 	hub := ws.NewHub(sessionManager, zapLogger)
 	ticketStore := ProvideTicketStore()

@@ -30,6 +30,9 @@ type Table struct {
 	Seats          [9]*Player
 	ActionCh       chan PlayerAction
 	CloseCh        chan struct{}
+
+	// OnHandComplete 手牌結束回調 (用於同步籌碼等)
+	OnHandComplete func(table *Table)
 }
 
 func NewTable(id string) *Table {
@@ -515,6 +518,11 @@ func (t *Table) endHand() {
 
 	// 設置狀態為 Idle，準備下一手牌
 	t.State = StateIdle
+
+	// 觸發手牌結束回調
+	if t.OnHandComplete != nil {
+		t.OnHandComplete(t)
+	}
 }
 
 // rotateDealerButton 將 Dealer 位置移到下一個有效座位

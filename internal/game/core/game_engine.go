@@ -34,6 +34,9 @@ type GameEngine interface {
 
 	// BroadcastEvent 廣播事件給所有觀眾/玩家
 	BroadcastEvent(event GameEvent)
+
+	// GetEventChannel 獲取事件通道 (供服務層監聽)
+	GetEventChannel() <-chan GameEvent
 }
 
 // GameType 遊戲類型枚舉
@@ -125,14 +128,13 @@ type GameEvent struct {
 type EventType string
 
 const (
-	EventGameStart   EventType = "game_start"
-	EventGameEnd     EventType = "game_end"
-	EventPlayerJoin  EventType = "player_join"
-	EventPlayerLeave EventType = "player_leave"
-	EventStateChange EventType = "state_change"
-	EventBetPlaced   EventType = "bet_placed"
-	EventCardDealt   EventType = "card_dealt"
-	EventWinner      EventType = "winner"
+	EventGameStart    EventType = "game_start"
+	EventGameEnd      EventType = "game_end"
+	EventPlayerJoin   EventType = "player_join"
+	EventPlayerLeave  EventType = "player_leave"
+	EventStateChange  EventType = "state_change"
+	EventBetPlaced    EventType = "bet_placed"
+	EventHandComplete EventType = "hand_complete"
 )
 
 // Player 玩家通用結構

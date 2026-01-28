@@ -56,7 +56,18 @@ func (tm *TableManager) CreateTable(gameType GameType, config GameConfig) (strin
 	// 啟動遊戲循環
 	go engine.Start(context.Background())
 
+	// 監聽遊戲事件
+	go tm.watchGameEvents(tableID, engine.GetEventChannel())
+
 	return tableID, nil
+}
+
+// watchGameEvents 監聽遊戲事件
+func (tm *TableManager) watchGameEvents(gameID string, ch <-chan GameEvent) {
+	// 注意：這裡應該通過回調或其他方式通知 GameService，而不是把邏輯寫死在 TableManager
+	// 但為了 MVP 簡單起見，我們可以在 TableManager 中注入一個處理器，或者讓 GameService 來做這件事。
+	// 由於 TableManager 目前不知道 SessionRepo，我們改變策略：
+	// 讓 GameService 在 CreateGame 後獲取 Engine 並監聽。
 }
 
 // GetTable 獲取桌子

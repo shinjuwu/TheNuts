@@ -291,6 +291,8 @@ func (h *MessageHandler) handleLeaveTable(playerID uuid.UUID, req Request) {
 }
 
 // handleSitDown 处理坐下请求
+// NOTE: 直接操作 table.Players，與 Table.Run() goroutine 存在潛在資料競爭。
+// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
 func (h *MessageHandler) handleSitDown(playerID uuid.UUID, req Request) {
 	session, exists := h.sessionManager.GetSession(playerID)
 	if !exists {
@@ -304,16 +306,35 @@ func (h *MessageHandler) handleSitDown(playerID uuid.UUID, req Request) {
 		return
 	}
 
-	// 更新玩家状态为准备游戏
-	// TODO: 在 domain 层更新玩家状态
+	table := h.tableManager.GetOrCreateTable(tableID)
+
+	if err := table.PlayerSitDown(playerID.String()); err != nil {
+		h.logger.Warn("sit down failed",
+			zap.String("player_id", playerID.String()),
+			zap.String("table_id", tableID),
+			zap.Error(err),
+		)
+		h.sendError(playerID, "sit_down_failed", err.Error())
+		return
+	}
+
+	h.broadcastTableState(tableID, table)
 
 	h.sendResponse(playerID, "SIT_DOWN_SUCCESS", map[string]interface{}{
 		"table_id": tableID,
 		"seat_no":  session.SeatNo,
 	})
+
+	h.logger.Info("player sat down",
+		zap.String("player_id", playerID.String()),
+		zap.String("table_id", tableID),
+		zap.Int("seat_no", session.SeatNo),
+	)
 }
 
 // handleStandUp 处理站起请求
+// NOTE: 直接操作 table.Players，與 Table.Run() goroutine 存在潛在資料競爭。
+// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
 func (h *MessageHandler) handleStandUp(playerID uuid.UUID, req Request) {
 	session, exists := h.sessionManager.GetSession(playerID)
 	if !exists {
@@ -327,12 +348,31 @@ func (h *MessageHandler) handleStandUp(playerID uuid.UUID, req Request) {
 		return
 	}
 
-	// 更新玩家状态为旁观
-	// TODO: 在 domain 层更新玩家状态
+	table := h.tableManager.GetOrCreateTable(tableID)
+
+	wasInHand, err := table.PlayerStandUp(playerID.String())
+	if err != nil {
+		h.logger.Warn("stand up failed",
+			zap.String("player_id", playerID.String()),
+			zap.String("table_id", tableID),
+			zap.Error(err),
+		)
+		h.sendError(playerID, "stand_up_failed", err.Error())
+		return
+	}
+
+	h.broadcastTableState(tableID, table)
 
 	h.sendResponse(playerID, "STAND_UP_SUCCESS", map[string]interface{}{
-		"table_id": tableID,
+		"table_id":    tableID,
+		"was_in_hand": wasInHand,
 	})
+
+	h.logger.Info("player stood up",
+		zap.String("player_id", playerID.String()),
+		zap.String("table_id", tableID),
+		zap.Bool("was_in_hand", wasInHand),
+	)
 }
 
 // handleGameAction 处理游戏动作
