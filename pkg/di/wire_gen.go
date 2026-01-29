@@ -36,16 +36,16 @@ func InitApp(configPath string) (*App, error) {
 	tableManager := ProvideTableManager(gameService)
 	sessionManager := ProvideSessionManager(gameService, zapLogger)
 	hub := ws.NewHub(sessionManager, zapLogger)
-	ticketStore := ProvideTicketStore()
+	redisClient, err := ProvideRedisClient(configConfig, zapLogger)
+	if err != nil {
+		return nil, err
+	}
+	ticketStore := ProvideTicketStore(redisClient)
 	handler := ProvideWSHandler(hub, tableManager, sessionManager, gameService, ticketStore, zapLogger)
 	jwtService := ProvideJWTService(configConfig)
 	accountRepository := ProvideAccountRepository(postgresDB)
 	authService := ProvideAuthService(accountRepository, playerRepository, zapLogger)
 	authHandler := ProvideAuthHandler(jwtService, ticketStore, authService, configConfig, zapLogger)
-	redisClient, err := ProvideRedisClient(configConfig, zapLogger)
-	if err != nil {
-		return nil, err
-	}
 	app := &App{
 		Config:          configConfig,
 		Logger:          zapLogger,

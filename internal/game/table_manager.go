@@ -17,6 +17,9 @@ type TableManager struct {
 	gameService *service.GameService
 	logger      *zap.Logger
 	tableLogger domain.Logger // 注入到每張 Table
+
+	// 遊戲事件回調（由 main.go 注入，轉發到 WebSocket）
+	onTableEvent func(event domain.TableEvent)
 }
 
 func NewTableManager(gs *service.GameService) *TableManager {
@@ -32,6 +35,11 @@ func (tm *TableManager) SetLogger(logger *zap.Logger) {
 	tm.tableLogger = &zapDomainLogger{logger: logger}
 }
 
+// SetOnTableEvent 設定遊戲事件回調（應在建表前呼叫）
+func (tm *TableManager) SetOnTableEvent(fn func(event domain.TableEvent)) {
+	tm.onTableEvent = fn
+}
+
 func (tm *TableManager) GetOrCreateTable(id string) *domain.Table {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -42,6 +50,9 @@ func (tm *TableManager) GetOrCreateTable(id string) *domain.Table {
 
 	t := domain.NewTable(id)
 	t.AddOnHandComplete(tm.onHandComplete)
+	if tm.onTableEvent != nil {
+		t.AddOnEvent(tm.onTableEvent)
+	}
 	if tm.tableLogger != nil {
 		t.Logger = tm.tableLogger
 	}

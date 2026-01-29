@@ -9,7 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/shinjuwu/TheNuts/internal/auth"
+	"github.com/shinjuwu/TheNuts/internal/game/adapter/ws"
+	"github.com/shinjuwu/TheNuts/internal/game/domain"
 	"github.com/shinjuwu/TheNuts/pkg/di"
 	"go.uber.org/zap"
 )
@@ -25,6 +28,21 @@ func main() {
 	app.SessionManager.SetTableNotifier(app.TableManager)
 	app.WSHandler.SetAllowedOrigins(app.Config.Server.AllowedOrigins)
 	app.TableManager.SetLogger(app.Logger)
+	app.TableManager.SetOnTableEvent(func(event domain.TableEvent) {
+		resp := ws.Response{
+			Type:      string(event.Type),
+			Payload:   event.Data,
+			Timestamp: time.Now(),
+		}
+		if event.TargetPlayerID != "" {
+			playerUUID, err := uuid.Parse(event.TargetPlayerID)
+			if err == nil {
+				app.SessionManager.SendToPlayer(playerUUID, resp)
+			}
+		} else {
+			app.SessionManager.BroadcastToTable(event.TableID, resp)
+		}
+	})
 
 	// 3. 啟動背景服務
 	go app.Hub.Run()

@@ -55,7 +55,9 @@ func TestSimpleBettingRound(t *testing.T) {
 	// 2. 測試流程: BTN Call -> SB Call -> BB Check
 
 	// BTN Call 20
-	table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionCall})
+	if err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionCall}); err != nil {
+		t.Fatalf("Expected no error for p1 call, got %v", err)
+	}
 	if p1.CurrentBet != 20 {
 		t.Errorf("Expected p1 bet 20, got %d", p1.CurrentBet)
 	}
@@ -64,13 +66,17 @@ func TestSimpleBettingRound(t *testing.T) {
 	}
 
 	// SB Call 20
-	table.handleAction(PlayerAction{PlayerID: "p2", Type: ActionCall})
+	if err := table.handleAction(PlayerAction{PlayerID: "p2", Type: ActionCall}); err != nil {
+		t.Fatalf("Expected no error for p2 call, got %v", err)
+	}
 	if p2.CurrentBet != 20 {
 		t.Errorf("Expected p2 bet 20, got %d", p2.CurrentBet)
 	}
 
 	// BB Check
-	table.handleAction(PlayerAction{PlayerID: "p3", Type: ActionCheck})
+	if err := table.handleAction(PlayerAction{PlayerID: "p3", Type: ActionCheck}); err != nil {
+		t.Fatalf("Expected no error for p3 check, got %v", err)
+	}
 
 	// 3. 驗證是否進入 Flop
 	if table.State != StateFlop {
@@ -103,7 +109,9 @@ func TestFoldLogic(t *testing.T) {
 	table.MinBet = 20
 
 	// P1 Fold
-	table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionFold})
+	if err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionFold}); err != nil {
+		t.Fatalf("Expected no error for p1 fold, got %v", err)
+	}
 	if p1.Status != StatusFolded {
 		t.Error("Expected p1 folded")
 	}
@@ -791,7 +799,9 @@ func TestRemovePlayer_DuringHand_BetPreserved(t *testing.T) {
 	}
 
 	// p3 Check 完成，進入下一階段（此時 nextStreet 會收集所有玩家的 CurrentBet）
-	table.handleAction(PlayerAction{PlayerID: "p3", Type: ActionCheck})
+	if err := table.handleAction(PlayerAction{PlayerID: "p3", Type: ActionCheck}); err != nil {
+		t.Fatalf("Expected no error for p3 check, got %v", err)
+	}
 
 	// 驗證底池包含了 p1 的下注（20 + 20 + 20 = 60）
 	if table.Pots.Total() != 60 {
@@ -834,5 +844,145 @@ func TestRemovePlayer_DuringHand_LastTwoPlayers(t *testing.T) {
 	// p1 應該在 endHand() 清理中被移除
 	if _, exists := table.Players["p1"]; exists {
 		t.Error("Expected p1 removed from Players map after hand ended")
+	}
+}
+
+// === handleAction 錯誤回傳測試 ===
+
+// TestHandleAction_NotYourTurn 非當前玩家送動作 → ErrNotYourTurn
+func TestHandleAction_NotYourTurn(t *testing.T) {
+	table := NewTable("err-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0 // p1's turn
+	table.MinBet = 20
+
+	// p2 嘗試行動（不是 p2 的回合）
+	err := table.handleAction(PlayerAction{PlayerID: "p2", Type: ActionCall})
+	if err != ErrNotYourTurn {
+		t.Errorf("Expected ErrNotYourTurn, got %v", err)
+	}
+}
+
+// TestHandleAction_CannotCheck 有下注時 Check → ErrCannotCheck
+func TestHandleAction_CannotCheck(t *testing.T) {
+	table := NewTable("err-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0
+	table.MinBet = 20
+	// p1 的 CurrentBet 為 0，低於 MinBet 20，所以不能 Check
+	p1.CurrentBet = 0
+
+	err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionCheck})
+	if err != ErrCannotCheck {
+		t.Errorf("Expected ErrCannotCheck, got %v", err)
+	}
+}
+
+// TestHandleAction_BetTooLow 下注低於最低 → ErrBetTooLow
+func TestHandleAction_BetTooLow(t *testing.T) {
+	table := NewTable("err-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0
+	table.MinBet = 20
+
+	// 嘗試 Bet 10（低於 MinBet 20）
+	err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionBet, Amount: 10})
+	if err != ErrBetTooLow {
+		t.Errorf("Expected ErrBetTooLow, got %v", err)
+	}
+}
+
+// TestHandleAction_InsufficientChips 籌碼不足 → ErrInsufficientChips
+func TestHandleAction_InsufficientChips(t *testing.T) {
+	table := NewTable("err-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 30, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0
+	table.MinBet = 20
+
+	// 嘗試 Raise 到 50，但 p1 只有 30 chips（diff = 50 - 0 = 50 > 30）
+	err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionRaise, Amount: 50})
+	if err != ErrInsufficientChips {
+		t.Errorf("Expected ErrInsufficientChips, got %v", err)
+	}
+}
+
+// TestHandleAction_AlreadyAllIn 已全押再 AllIn → ErrAlreadyAllIn
+func TestHandleAction_AlreadyAllIn(t *testing.T) {
+	table := NewTable("err-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 0, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0
+	table.MinBet = 20
+
+	// p1 籌碼為 0，嘗試 AllIn
+	err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionAllIn})
+	if err != ErrAlreadyAllIn {
+		t.Errorf("Expected ErrAlreadyAllIn, got %v", err)
+	}
+}
+
+// TestHandleAction_ValidAction_ReturnsNil 合法動作 → nil
+func TestHandleAction_ValidAction_ReturnsNil(t *testing.T) {
+	table := NewTable("err-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0
+	table.MinBet = 20
+
+	// p1 Call（合法動作）
+	err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionCall})
+	if err != nil {
+		t.Errorf("Expected nil error for valid action, got %v", err)
+	}
+
+	// 驗證動作已生效
+	if p1.CurrentBet != 20 {
+		t.Errorf("Expected p1 CurrentBet 20, got %d", p1.CurrentBet)
 	}
 }

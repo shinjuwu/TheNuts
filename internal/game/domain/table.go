@@ -33,6 +33,9 @@ type Table struct {
 	// onHandCompleteCallbacks 手牌結束回調切片 (用於同步籌碼、事件廣播等)
 	onHandCompleteCallbacks []func(table *Table)
 
+	// onEventCallbacks 遊戲事件回調切片（用於廣播到 WebSocket）
+	onEventCallbacks []func(event TableEvent)
+
 	// 斷線追蹤
 	DisconnectedAt    map[string]time.Time // playerID -> 斷線時間
 	DisconnectTimeout time.Duration        // 斷線超時（預設 30 秒）
@@ -70,6 +73,19 @@ func (t *Table) HasOnHandCompleteCallbacks() bool {
 func (t *Table) FireOnHandComplete() {
 	for _, fn := range t.onHandCompleteCallbacks {
 		fn(t)
+	}
+}
+
+// AddOnEvent 註冊遊戲事件回調（應在 Run() 啟動前呼叫）
+func (t *Table) AddOnEvent(fn func(event TableEvent)) {
+	t.onEventCallbacks = append(t.onEventCallbacks, fn)
+}
+
+// fireEvent 自動填入 TableID 並觸發所有事件回調
+func (t *Table) fireEvent(event TableEvent) {
+	event.TableID = t.ID
+	for _, fn := range t.onEventCallbacks {
+		fn(event)
 	}
 }
 
@@ -120,7 +136,46 @@ func (t *Table) StartHand() {
 	// 4. 設定盲注 (Blind)
 	t.postBlinds()
 
-	// 5. 設定行動權
+	// 5. 發射事件：HAND_START
+	playerList := make([]map[string]interface{}, 0)
+	for _, p := range t.Seats {
+		if p != nil && p.IsActive() {
+			playerList = append(playerList, map[string]interface{}{
+				"player_id": p.ID,
+				"seat_idx":  p.SeatIdx,
+				"chips":     p.Chips,
+			})
+		}
+	}
+	t.fireEvent(TableEvent{
+		Type: EventHandStart,
+		Data: map[string]interface{}{
+			"dealer_pos": t.DealerPos,
+			"players":    playerList,
+		},
+	})
+
+	// 6. 發射事件：HOLE_CARDS（每位玩家各一個定向事件）
+	for _, p := range t.Seats {
+		if p != nil && p.IsActive() {
+			cards := make([]string, len(p.HoleCards))
+			for i, c := range p.HoleCards {
+				cards[i] = c.String()
+			}
+			t.fireEvent(TableEvent{
+				Type:           EventHoleCards,
+				TargetPlayerID: p.ID,
+				Data: map[string]interface{}{
+					"cards": cards,
+				},
+			})
+		}
+	}
+
+	// 7. 發射事件：BLINDS_POSTED
+	t.fireBlindsPostedEvent()
+
+	// 8. 設定行動權
 	// Preflop 由 BB 後一位 (UTG) 開始。若是 3 人桌: BTN, SB, BB -> BTN Action
 	t.CurrentPos = t.DealerPos // 之後會 Call moveToNextPlayer 調整到正確位置
 	t.moveToNextPlayer()
@@ -256,6 +311,27 @@ func (t *Table) postBlindHeadsUp(smallBlindAmount, bigBlindAmount int64) {
 	}
 }
 
+// fireBlindsPostedEvent 發射 BLINDS_POSTED 事件，收集已下盲注的玩家資訊
+func (t *Table) fireBlindsPostedEvent() {
+	blinds := make([]map[string]interface{}, 0)
+	for _, p := range t.Seats {
+		if p != nil && p.CurrentBet > 0 {
+			blinds = append(blinds, map[string]interface{}{
+				"player_id": p.ID,
+				"seat_idx":  p.SeatIdx,
+				"amount":    p.CurrentBet,
+			})
+		}
+	}
+	t.fireEvent(TableEvent{
+		Type: EventBlindsPosted,
+		Data: map[string]interface{}{
+			"blinds":  blinds,
+			"min_bet": t.MinBet,
+		},
+	})
+}
+
 func (t *Table) Run() {
 	// 創建定時器，每秒檢查是否可以開始新手牌
 	ticker := time.NewTicker(1 * time.Second)
@@ -295,8 +371,7 @@ func (t *Table) processCommand(cmd PlayerAction) {
 		return
 	default:
 		// 遊戲動作 (Fold/Check/Call/Bet/Raise/AllIn) 走原有邏輯
-		t.handleAction(cmd)
-		return
+		result.Err = t.handleAction(cmd)
 	}
 
 	// 回傳結果（如果有 ResultCh）
@@ -406,11 +481,11 @@ func (t *Table) tryStartNewHand() {
 }
 
 // handleAction 處理玩家動作
-func (t *Table) handleAction(act PlayerAction) {
+func (t *Table) handleAction(act PlayerAction) error {
 	// 1. 驗證是否輪到該玩家
 	currentSeat := t.Seats[t.CurrentPos]
 	if currentSeat == nil || currentSeat.ID != act.PlayerID {
-		return // Not your turn
+		return ErrNotYourTurn
 	}
 
 	player := t.Players[act.PlayerID]
@@ -422,7 +497,7 @@ func (t *Table) handleAction(act PlayerAction) {
 		player.HasActed = true
 	case ActionCheck:
 		if player.CurrentBet < t.MinBet {
-			return // Cannot check if there is a bet
+			return ErrCannotCheck
 		}
 		player.HasActed = true
 	case ActionCall:
@@ -437,11 +512,11 @@ func (t *Table) handleAction(act PlayerAction) {
 		player.HasActed = true
 	case ActionBet, ActionRaise:
 		if act.Amount < t.MinBet {
-			return // Invalid bet amount
+			return ErrBetTooLow
 		}
 		diff := act.Amount - player.CurrentBet
 		if player.Chips < diff {
-			return // Not enough chips
+			return ErrInsufficientChips
 		}
 
 		// 加注發生，重置其他人的 HasActed
@@ -463,7 +538,7 @@ func (t *Table) handleAction(act PlayerAction) {
 	case ActionAllIn:
 		// All-in: 玩家下注全部籌碼
 		if player.Chips == 0 {
-			return // Already all-in or no chips
+			return ErrAlreadyAllIn
 		}
 
 		totalBet := player.CurrentBet + player.Chips
@@ -483,12 +558,25 @@ func (t *Table) handleAction(act PlayerAction) {
 		}
 	}
 
-	// 3. 檢查回合是否結束
+	// 3. 發射 PLAYER_ACTION 事件
+	t.fireEvent(TableEvent{
+		Type: EventPlayerAction,
+		Data: map[string]interface{}{
+			"player_id": player.ID,
+			"action":    act.Type.String(),
+			"amount":    player.CurrentBet,
+			"chips":     player.Chips,
+		},
+	})
+
+	// 4. 檢查回合是否結束
 	if t.isRoundComplete() {
 		t.nextStreet()
 	} else {
 		t.moveToNextPlayer()
 	}
+
+	return nil
 }
 
 // isRoundComplete 判斷本輪下注是否結束
@@ -538,6 +626,16 @@ func (t *Table) nextStreet() {
 		t.Logger.Info("player wins (all others folded)",
 			"player_id", lastActivePlayer.ID, "amount", totalPot)
 
+		// 發射 WIN_BY_FOLD 事件
+		t.fireEvent(TableEvent{
+			Type: EventWinByFold,
+			Data: map[string]interface{}{
+				"player_id":   lastActivePlayer.ID,
+				"amount":      totalPot,
+				"final_chips": lastActivePlayer.Chips,
+			},
+		})
+
 		// 結束這手牌
 		t.endHand()
 		return
@@ -560,31 +658,54 @@ func (t *Table) nextStreet() {
 	}
 	t.MinBet = 0
 
+	var streetName string
+	var newCards []Card
+
 	switch t.State {
 	case StatePreFlop:
 		t.State = StateFlop
-		// Burn 一張牌
-		t.Deck.Draw(1)
-		// 發 3 張公牌
-		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(3)...)
+		streetName = "FLOP"
+		t.Deck.Draw(1) // Burn
+		newCards = t.Deck.Draw(3)
+		t.CommunityCards = append(t.CommunityCards, newCards...)
 		t.Logger.Info("dealing flop", "cards", t.CommunityCards)
 	case StateFlop:
 		t.State = StateTurn
-		// Burn 一張牌
-		t.Deck.Draw(1)
-		// 發 1 張公牌 (Turn)
-		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
+		streetName = "TURN"
+		t.Deck.Draw(1) // Burn
+		newCards = t.Deck.Draw(1)
+		t.CommunityCards = append(t.CommunityCards, newCards...)
 		t.Logger.Info("dealing turn", "cards", t.CommunityCards)
 	case StateTurn:
 		t.State = StateRiver
-		// Burn 一張牌
-		t.Deck.Draw(1)
-		// 發 1 張公牌 (River)
-		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
+		streetName = "RIVER"
+		t.Deck.Draw(1) // Burn
+		newCards = t.Deck.Draw(1)
+		t.CommunityCards = append(t.CommunityCards, newCards...)
 		t.Logger.Info("dealing river", "cards", t.CommunityCards)
 	case StateRiver:
 		t.State = StateShowdown
 		t.Showdown()
+	}
+
+	// 發射 COMMUNITY_CARDS 事件（Showdown 不發）
+	if streetName != "" {
+		newCardStrs := make([]string, len(newCards))
+		for i, c := range newCards {
+			newCardStrs[i] = c.String()
+		}
+		allCardStrs := make([]string, len(t.CommunityCards))
+		for i, c := range t.CommunityCards {
+			allCardStrs[i] = c.String()
+		}
+		t.fireEvent(TableEvent{
+			Type: EventCommunityCards,
+			Data: map[string]interface{}{
+				"street":          streetName,
+				"new_cards":       newCardStrs,
+				"community_cards": allCardStrs,
+			},
+		})
 	}
 
 	// 進入下一街後，行動權回到 Dealer 後第一位 Active 玩家
@@ -600,6 +721,15 @@ func (t *Table) moveToNextPlayer() {
 		t.CurrentPos = (t.CurrentPos + 1) % 9
 		p := t.Seats[t.CurrentPos]
 		if p != nil && p.CanAct() {
+			t.fireEvent(TableEvent{
+				Type:           EventYourTurn,
+				TargetPlayerID: p.ID,
+				Data: map[string]interface{}{
+					"seat_idx":  t.CurrentPos,
+					"min_bet":   t.MinBet,
+					"pot_total": t.Pots.Total(),
+				},
+			})
 			return
 		}
 	}
@@ -633,6 +763,35 @@ func (t *Table) Showdown() {
 		}
 	}
 
+	// 發射 SHOWDOWN_RESULT 事件
+	winners := make([]map[string]interface{}, 0)
+	for playerID, amount := range payouts {
+		entry := map[string]interface{}{
+			"player_id": playerID,
+			"amount":    amount,
+		}
+		if player, exists := t.Players[playerID]; exists {
+			entry["final_chips"] = player.Chips
+			cards := make([]string, len(player.HoleCards))
+			for i, c := range player.HoleCards {
+				cards[i] = c.String()
+			}
+			entry["hole_cards"] = cards
+		}
+		winners = append(winners, entry)
+	}
+	communityStrs := make([]string, len(t.CommunityCards))
+	for i, c := range t.CommunityCards {
+		communityStrs[i] = c.String()
+	}
+	t.fireEvent(TableEvent{
+		Type: EventShowdownResult,
+		Data: map[string]interface{}{
+			"winners":         winners,
+			"community_cards": communityStrs,
+		},
+	})
+
 	// 手牌結束，執行清理
 	t.endHand()
 }
@@ -657,6 +816,23 @@ func (t *Table) endHand() {
 
 	// 設置狀態為 Idle，準備下一手牌
 	t.State = StateIdle
+
+	// 發射 HAND_END 事件
+	finalChips := make([]map[string]interface{}, 0)
+	for _, p := range t.Players {
+		if p.SeatIdx >= 0 {
+			finalChips = append(finalChips, map[string]interface{}{
+				"player_id": p.ID,
+				"chips":     p.Chips,
+			})
+		}
+	}
+	t.fireEvent(TableEvent{
+		Type: EventHandEnd,
+		Data: map[string]interface{}{
+			"players": finalChips,
+		},
+	})
 
 	// 觸發手牌結束回調
 	t.FireOnHandComplete()

@@ -70,11 +70,9 @@ func ProvideJWTService(cfg *config.Config) *auth.JWTService {
 	return auth.NewJWTService(cfg.Auth.JWTSecret)
 }
 
-// ProvideTicketStore 提供票券儲存
-func ProvideTicketStore() auth.TicketStore {
-	// 使用記憶體版本（開發/測試）
-	// 生產環境應該使用 Redis 版本
-	return auth.NewMemoryTicketStore()
+// ProvideTicketStore 提供票券儲存（使用 Redis）
+func ProvideTicketStore(redisClient *database.RedisClient) auth.TicketStore {
+	return auth.NewRedisTicketStore(redisClient.Client)
 }
 
 // ProvideAuthService 提供认证服务

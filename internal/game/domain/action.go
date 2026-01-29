@@ -21,6 +21,26 @@ const (
 	ActionReconnect  // 玩家重連
 )
 
+// String 回傳動作類型的字串表示
+func (a ActionType) String() string {
+	switch a {
+	case ActionFold:
+		return "FOLD"
+	case ActionCheck:
+		return "CHECK"
+	case ActionCall:
+		return "CALL"
+	case ActionBet:
+		return "BET"
+	case ActionRaise:
+		return "RAISE"
+	case ActionAllIn:
+		return "ALL_IN"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // PlayerAction 是核心邏輯使用的標準動作結構 (Royal Language)
 // 它不依賴任何外部標籤 (如 json tag)
 type PlayerAction struct {

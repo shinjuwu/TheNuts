@@ -448,16 +448,17 @@ func (h *MessageHandler) handleGameAction(playerID uuid.UUID, req Request) {
 		Amount:   req.Amount,
 	}
 
-	// 发送到桌子的动作通道
-	select {
-	case table.ActionCh <- playerAction:
-		h.logger.Debug("game action sent",
-			zap.String("player_id", playerID.String()),
-			zap.String("action", req.GameAction),
-		)
-	default:
-		h.sendError(playerID, "action_failed", "Failed to process action")
+	// 透過 sendTableCommand 同步等待結果
+	result := h.sendTableCommand(table, playerAction)
+	if result.Err != nil {
+		h.sendError(playerID, "action_rejected", result.Err.Error())
+		return
 	}
+
+	h.logger.Debug("game action accepted",
+		zap.String("player_id", playerID.String()),
+		zap.String("action", req.GameAction),
+	)
 }
 
 // handleGetBalance 处理查询余额请求
