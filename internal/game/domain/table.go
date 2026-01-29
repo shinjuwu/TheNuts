@@ -30,8 +30,8 @@ type Table struct {
 	ActionCh       chan PlayerAction
 	CloseCh        chan struct{}
 
-	// OnHandComplete 手牌結束回調 (用於同步籌碼等)
-	OnHandComplete func(table *Table)
+	// onHandCompleteCallbacks 手牌結束回調切片 (用於同步籌碼、事件廣播等)
+	onHandCompleteCallbacks []func(table *Table)
 
 	// 斷線追蹤
 	DisconnectedAt    map[string]time.Time // playerID -> 斷線時間
@@ -53,6 +53,23 @@ func NewTable(id string) *Table {
 		DisconnectedAt:    make(map[string]time.Time),
 		DisconnectTimeout: 30 * time.Second,
 		Logger:            NewNoopLogger(),
+	}
+}
+
+// AddOnHandComplete 註冊手牌結束回調（應在 Run() 啟動前呼叫）
+func (t *Table) AddOnHandComplete(fn func(table *Table)) {
+	t.onHandCompleteCallbacks = append(t.onHandCompleteCallbacks, fn)
+}
+
+// HasOnHandCompleteCallbacks 檢查是否有註冊的手牌結束回調
+func (t *Table) HasOnHandCompleteCallbacks() bool {
+	return len(t.onHandCompleteCallbacks) > 0
+}
+
+// FireOnHandComplete 觸發所有手牌結束回調
+func (t *Table) FireOnHandComplete() {
+	for _, fn := range t.onHandCompleteCallbacks {
+		fn(t)
 	}
 }
 
@@ -603,9 +620,7 @@ func (t *Table) endHand() {
 	t.State = StateIdle
 
 	// 觸發手牌結束回調
-	if t.OnHandComplete != nil {
-		t.OnHandComplete(t)
-	}
+	t.FireOnHandComplete()
 }
 
 // rotateDealerButton 將 Dealer 位置移到下一個有效座位

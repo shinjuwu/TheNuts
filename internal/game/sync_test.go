@@ -107,11 +107,11 @@ func TestChipSync(t *testing.T) {
 
 	// 7. Trigger Sync manually (as if hand ended)
 	// We call the callback logic directly via the hook on the table instance
-	if table.OnHandComplete == nil {
-		t.Fatal("OnHandComplete callback is nil")
+	if !table.HasOnHandCompleteCallbacks() {
+		t.Fatal("OnHandComplete callbacks are empty")
 	}
 
-	table.OnHandComplete(table)
+	table.FireOnHandComplete()
 
 	// 8. Verify
 	// onHandComplete 為異步執行，等待 goroutine 完成

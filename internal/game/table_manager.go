@@ -41,7 +41,7 @@ func (tm *TableManager) GetOrCreateTable(id string) *domain.Table {
 	}
 
 	t := domain.NewTable(id)
-	t.OnHandComplete = tm.onHandComplete
+	t.AddOnHandComplete(tm.onHandComplete)
 	if tm.tableLogger != nil {
 		t.Logger = tm.tableLogger
 	}

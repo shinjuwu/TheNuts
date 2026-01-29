@@ -31,7 +31,7 @@ func (f *PokerEngineFactory) Create(config core.GameConfig) (core.GameEngine, er
 		table:   domain.NewTable(config.GameID),
 		eventCh: make(chan core.GameEvent, 100),
 	}
-	engine.table.OnHandComplete = engine.onHandComplete
+	engine.table.AddOnHandComplete(engine.onHandComplete)
 	return engine, nil
 }
 
@@ -48,7 +48,7 @@ func (e *PokerEngine) Initialize(config core.GameConfig) error {
 	e.config = config
 	e.table = domain.NewTable(config.GameID)
 	// Hook up the OnHandComplete callback
-	e.table.OnHandComplete = e.onHandComplete
+	e.table.AddOnHandComplete(e.onHandComplete)
 
 	// 從 CustomData 提取德撲專屬配置
 	if blinds, ok := config.CustomData["blinds"].(int64); ok {
