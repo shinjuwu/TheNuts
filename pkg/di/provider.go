@@ -79,9 +79,10 @@ func ProvideTicketStore(redisClient *database.RedisClient) auth.TicketStore {
 func ProvideAuthService(
 	accountRepo repository.AccountRepository,
 	playerRepo repository.PlayerRepository,
+	walletRepo repository.WalletRepository,
 	logger *zap.Logger,
 ) *auth.AuthService {
-	return auth.NewAuthService(accountRepo, playerRepo, logger)
+	return auth.NewAuthService(accountRepo, playerRepo, walletRepo, logger)
 }
 
 // ProvideAuthHandler 提供認證 Handler

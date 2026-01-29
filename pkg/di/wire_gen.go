@@ -44,7 +44,7 @@ func InitApp(configPath string) (*App, error) {
 	handler := ProvideWSHandler(hub, tableManager, sessionManager, gameService, ticketStore, zapLogger)
 	jwtService := ProvideJWTService(configConfig)
 	accountRepository := ProvideAccountRepository(postgresDB)
-	authService := ProvideAuthService(accountRepository, playerRepository, zapLogger)
+	authService := ProvideAuthService(accountRepository, playerRepository, walletRepository, zapLogger)
 	authHandler := ProvideAuthHandler(jwtService, ticketStore, authService, configConfig, zapLogger)
 	app := &App{
 		Config:          configConfig,

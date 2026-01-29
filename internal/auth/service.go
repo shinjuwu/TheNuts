@@ -40,6 +40,7 @@ const (
 type AuthService struct {
 	accountRepo repository.AccountRepository
 	playerRepo  repository.PlayerRepository
+	walletRepo  repository.WalletRepository
 	logger      *zap.Logger
 }
 
@@ -47,11 +48,13 @@ type AuthService struct {
 func NewAuthService(
 	accountRepo repository.AccountRepository,
 	playerRepo repository.PlayerRepository,
+	walletRepo repository.WalletRepository,
 	logger *zap.Logger,
 ) *AuthService {
 	return &AuthService{
 		accountRepo: accountRepo,
 		playerRepo:  playerRepo,
+		walletRepo:  walletRepo,
 		logger:      logger,
 	}
 }
@@ -117,10 +120,30 @@ func (s *AuthService) Register(ctx context.Context, username, email, password st
 		return nil, nil, fmt.Errorf("failed to create player: %w", err)
 	}
 
-	s.logger.Info("user registered successfully",
+	// 7. 创建初始钱包 (For MVP testing: giving initial balance)
+	initialBalance := int64(100000) // 1000.00
+	wallet := &repository.Wallet{
+		ID:            uuid.New(),
+		PlayerID:      player.ID,
+		Balance:       initialBalance,
+		LockedBalance: 0,
+		Currency:      "USD",
+		Version:       1,
+	}
+
+	if err := s.walletRepo.Create(ctx, wallet); err != nil {
+		s.logger.Error("failed to create wallet for player",
+			zap.String("player_id", player.ID.String()),
+			zap.Error(err),
+		)
+		// Usually transactional, but for MVP we just log
+	}
+
+	s.logger.Info("user registered successfully with wallet",
 		zap.String("username", username),
 		zap.String("account_id", account.ID.String()),
 		zap.String("player_id", player.ID.String()),
+		zap.Int64("initial_balance", initialBalance),
 	)
 
 	return account, player, nil

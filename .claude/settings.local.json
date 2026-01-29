@@ -3,7 +3,9 @@
     "allow": [
       "Bash(go build:*)",
       "Bash(go test:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git -C \"C:\\\\work\\\\TheNuts\" status)",
+      "Bash(git -C \"C:\\\\work\\\\TheNuts\" log --oneline -10)"
     ]
   }
 }

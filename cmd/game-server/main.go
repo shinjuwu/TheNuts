@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,8 +76,29 @@ func main() {
 	// WebSocket 路由（需要票券）
 	mux.Handle("/ws", app.WSHandler)
 
-	// 靜態文件服務（方便測試 index.html）
-	mux.Handle("/", http.FileServer(http.Dir(".")))
+	// 靜態文件服務 (SPA mode)
+	// 指向 web/dist
+	distDir := "./web/dist"
+	fs := http.FileServer(http.Dir(distDir))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// API 和 WS 請求不處理
+		if strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+
+		// 嘗試查找文件
+		path := filepath.Join(distDir, r.URL.Path)
+		_, err := os.Stat(path)
+
+		// 如果文件不存在且不是 API/WS，則返回 index.html (SPA Fallback)
+		if os.IsNotExist(err) && !strings.Contains(r.URL.Path, ".") {
+			http.ServeFile(w, r, filepath.Join(distDir, "index.html"))
+			return
+		}
+
+		fs.ServeHTTP(w, r)
+	}))
 
 	srv := &http.Server{
 		Addr:    ":" + app.Config.Server.Port,

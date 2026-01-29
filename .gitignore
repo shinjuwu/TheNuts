@@ -1,6 +1,7 @@
 
 *.exe
 *.bin
+dist/
 .env
 
 # Node.js
