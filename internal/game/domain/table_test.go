@@ -986,3 +986,201 @@ func TestHandleAction_ValidAction_ReturnsNil(t *testing.T) {
 		t.Errorf("Expected p1 CurrentBet 20, got %d", p1.CurrentBet)
 	}
 }
+
+// === 行動計時器測試 ===
+
+// TestActionTimeout_AutoFold 超時且有下注 → 自動 Fold
+func TestActionTimeout_AutoFold(t *testing.T) {
+	table := NewTable("timeout-test")
+	table.ActionTimeout = 1 * time.Millisecond
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0 // p1's turn
+	table.MinBet = 20
+	p1.CurrentBet = 0 // p1 hasn't matched the MinBet → cannot Check → auto Fold
+
+	// 設定已過期的 deadline
+	table.ActionDeadline = time.Now().Add(-1 * time.Second)
+
+	table.checkActionTimeout()
+
+	// p1 應該被自動 Fold
+	if p1.Status != StatusFolded {
+		t.Errorf("Expected p1 status Folded after action timeout, got %v", p1.Status)
+	}
+	if !p1.HasActed {
+		t.Error("Expected p1 HasActed true after auto-fold")
+	}
+}
+
+// TestActionTimeout_AutoCheck 超時且可 Check → 自動 Check
+func TestActionTimeout_AutoCheck(t *testing.T) {
+	table := NewTable("timeout-test")
+	table.ActionTimeout = 1 * time.Millisecond
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StateFlop
+	table.CurrentPos = 0 // p1's turn
+	table.MinBet = 0     // Flop 階段 MinBet 重置為 0
+	p1.CurrentBet = 0    // p1.CurrentBet >= MinBet (0 >= 0) → can Check
+
+	// 設定已過期的 deadline
+	table.ActionDeadline = time.Now().Add(-1 * time.Second)
+
+	table.checkActionTimeout()
+
+	// p1 應該被自動 Check（不是 Fold）
+	if p1.Status == StatusFolded {
+		t.Error("Expected p1 NOT folded (should auto-check when MinBet == 0)")
+	}
+	if !p1.HasActed {
+		t.Error("Expected p1 HasActed true after auto-check")
+	}
+}
+
+// TestActionTimeout_NoTimerWhenIdle Idle 狀態不觸發超時
+func TestActionTimeout_NoTimerWhenIdle(t *testing.T) {
+	table := NewTable("timeout-test")
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	table.Seats[0] = p1
+	table.Players["p1"] = p1
+
+	table.State = StateIdle
+	table.CurrentPos = 0
+	// 設定已過期的 deadline（但 State 為 Idle）
+	table.ActionDeadline = time.Now().Add(-1 * time.Second)
+
+	table.checkActionTimeout()
+
+	// Idle 狀態下不應觸發任何動作
+	if p1.Status != StatusPlaying {
+		t.Errorf("Expected p1 status unchanged in Idle state, got %v", p1.Status)
+	}
+}
+
+// TestActionTimeout_ResetOnAction 合法動作後 deadline 被重設（moveToNextPlayer 設定新的）
+func TestActionTimeout_ResetOnAction(t *testing.T) {
+	table := NewTable("timeout-test")
+	table.ActionTimeout = 30 * time.Second
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0
+	table.MinBet = 20
+
+	// 設定一個即將過期的 deadline
+	oldDeadline := time.Now().Add(1 * time.Second)
+	table.ActionDeadline = oldDeadline
+
+	// p1 做合法動作（Call）→ moveToNextPlayer 會設定新的 deadline
+	err := table.handleAction(PlayerAction{PlayerID: "p1", Type: ActionCall})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// deadline 應該被更新為新的值（大約 30 秒後）
+	if table.ActionDeadline.Equal(oldDeadline) {
+		t.Error("Expected ActionDeadline to be reset after action")
+	}
+	if table.ActionDeadline.Before(time.Now()) {
+		t.Error("Expected new ActionDeadline to be in the future")
+	}
+}
+
+// TestActionTimeout_DeadlineInYourTurnEvent YOUR_TURN 事件包含 deadline
+func TestActionTimeout_DeadlineInYourTurnEvent(t *testing.T) {
+	table := NewTable("timeout-test")
+	table.ActionTimeout = 30 * time.Second
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0 // 將從 0 開始找下一位
+	table.MinBet = 20
+
+	var capturedEvent TableEvent
+	table.AddOnEvent(func(event TableEvent) {
+		if event.Type == EventYourTurn {
+			capturedEvent = event
+		}
+	})
+
+	// moveToNextPlayer 會觸發 YOUR_TURN 事件
+	table.moveToNextPlayer()
+
+	if capturedEvent.Type != EventYourTurn {
+		t.Fatal("Expected YOUR_TURN event to be fired")
+	}
+
+	deadline, ok := capturedEvent.Data["deadline"]
+	if !ok {
+		t.Fatal("Expected 'deadline' field in YOUR_TURN event data")
+	}
+
+	deadlineUnix, ok := deadline.(int64)
+	if !ok {
+		t.Fatalf("Expected deadline to be int64, got %T", deadline)
+	}
+
+	// deadline 應該大約在 30 秒後
+	now := time.Now().Unix()
+	if deadlineUnix < now || deadlineUnix > now+35 {
+		t.Errorf("Expected deadline around 30s from now, got %d (now=%d, diff=%d)",
+			deadlineUnix, now, deadlineUnix-now)
+	}
+}
+
+// TestActionTimeout_ClearedOnEndHand endHand 後 ActionDeadline 被清除
+func TestActionTimeout_ClearedOnEndHand(t *testing.T) {
+	table := NewTable("timeout-test")
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.DealerPos = 0
+	// 設定一個未來的 deadline
+	table.ActionDeadline = time.Now().Add(30 * time.Second)
+
+	// 呼叫 endHand
+	table.endHand()
+
+	// ActionDeadline 應該被清除
+	if !table.ActionDeadline.IsZero() {
+		t.Error("Expected ActionDeadline to be cleared after endHand")
+	}
+}

@@ -36,6 +36,10 @@ type Table struct {
 	// onEventCallbacks 遊戲事件回調切片（用於廣播到 WebSocket）
 	onEventCallbacks []func(event TableEvent)
 
+	// 行動計時器
+	ActionTimeout  time.Duration // 行動超時時間（預設 30 秒）
+	ActionDeadline time.Time     // 當前行動者的截止時間（zero 表示無計時）
+
 	// 斷線追蹤
 	DisconnectedAt    map[string]time.Time // playerID -> 斷線時間
 	DisconnectTimeout time.Duration        // 斷線超時（預設 30 秒）
@@ -53,6 +57,7 @@ func NewTable(id string) *Table {
 		ActionCh:          make(chan PlayerAction, 100),
 		CloseCh:           make(chan struct{}),
 		State:             StateIdle,
+		ActionTimeout:     30 * time.Second,
 		DisconnectedAt:    make(map[string]time.Time),
 		DisconnectTimeout: 30 * time.Second,
 		Logger:            NewNoopLogger(),
@@ -342,6 +347,7 @@ func (t *Table) Run() {
 		case cmd := <-t.ActionCh:
 			t.processCommand(cmd)
 		case <-ticker.C:
+			t.checkActionTimeout()
 			t.checkDisconnectTimeouts()
 			t.tryStartNewHand()
 		case <-t.CloseCh:
@@ -721,6 +727,7 @@ func (t *Table) moveToNextPlayer() {
 		t.CurrentPos = (t.CurrentPos + 1) % 9
 		p := t.Seats[t.CurrentPos]
 		if p != nil && p.CanAct() {
+			t.ActionDeadline = time.Now().Add(t.ActionTimeout)
 			t.fireEvent(TableEvent{
 				Type:           EventYourTurn,
 				TargetPlayerID: p.ID,
@@ -728,6 +735,7 @@ func (t *Table) moveToNextPlayer() {
 					"seat_idx":  t.CurrentPos,
 					"min_bet":   t.MinBet,
 					"pot_total": t.Pots.Total(),
+					"deadline":  t.ActionDeadline.Unix(),
 				},
 			})
 			return
@@ -798,6 +806,7 @@ func (t *Table) Showdown() {
 
 // endHand 結束當前手牌並準備下一手
 func (t *Table) endHand() {
+	t.ActionDeadline = time.Time{} // 清除行動計時器
 	t.Logger.Info("hand complete")
 
 	// 移動 Dealer Button
@@ -893,6 +902,44 @@ func (t *Table) handleReconnect(playerID string) {
 		delete(t.DisconnectedAt, playerID)
 		t.Logger.Info("player reconnected", "player_id", playerID, "table_id", t.ID)
 	}
+}
+
+// checkActionTimeout 檢查當前行動者是否超時，超時則自動 Check 或 Fold
+func (t *Table) checkActionTimeout() {
+	if t.ActionDeadline.IsZero() || t.State == StateIdle {
+		return
+	}
+	if time.Now().Before(t.ActionDeadline) {
+		return
+	}
+
+	current := t.Seats[t.CurrentPos]
+	if current == nil || !current.CanAct() {
+		t.ActionDeadline = time.Time{}
+		return
+	}
+
+	t.Logger.Info("action timeout", "player_id", current.ID)
+
+	// 發射 ACTION_TIMEOUT 事件
+	t.fireEvent(TableEvent{
+		Type: EventActionTimeout,
+		Data: map[string]interface{}{
+			"player_id": current.ID,
+			"seat_idx":  t.CurrentPos,
+		},
+	})
+
+	// 決定預設動作：可以 Check 就 Check，否則 Fold
+	actionType := ActionFold
+	if current.CurrentBet >= t.MinBet {
+		actionType = ActionCheck
+	}
+
+	t.handleAction(PlayerAction{
+		PlayerID: current.ID,
+		Type:     actionType,
+	})
 }
 
 // checkDisconnectTimeouts 檢查並處理斷線超時的玩家

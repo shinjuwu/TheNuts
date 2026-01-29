@@ -13,6 +13,7 @@ const (
 	EventShowdownResult TableEventType = "SHOWDOWN_RESULT"
 	EventWinByFold      TableEventType = "WIN_BY_FOLD"
 	EventHandEnd        TableEventType = "HAND_END"
+	EventActionTimeout  TableEventType = "ACTION_TIMEOUT"
 )
 
 // TableEvent 遊戲事件，由 Table 發射，上層回調轉發到 WebSocket
