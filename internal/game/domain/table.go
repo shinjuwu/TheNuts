@@ -2,7 +2,6 @@ package domain
 
 import (
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -33,17 +32,27 @@ type Table struct {
 
 	// OnHandComplete 手牌結束回調 (用於同步籌碼等)
 	OnHandComplete func(table *Table)
+
+	// 斷線追蹤
+	DisconnectedAt    map[string]time.Time // playerID -> 斷線時間
+	DisconnectTimeout time.Duration        // 斷線超時（預設 30 秒）
+
+	// 日誌
+	Logger Logger
 }
 
 func NewTable(id string) *Table {
 	return &Table{
-		ID:       id,
-		Pots:     NewPotManager(),
-		Deck:     NewDeck(),
-		Players:  make(map[string]*Player),
-		ActionCh: make(chan PlayerAction, 100),
-		CloseCh:  make(chan struct{}),
-		State:    StateIdle,
+		ID:                id,
+		Pots:              NewPotManager(),
+		Deck:              NewDeck(),
+		Players:           make(map[string]*Player),
+		ActionCh:          make(chan PlayerAction, 100),
+		CloseCh:           make(chan struct{}),
+		State:             StateIdle,
+		DisconnectedAt:    make(map[string]time.Time),
+		DisconnectTimeout: 30 * time.Second,
+		Logger:            NewNoopLogger(),
 	}
 }
 
@@ -162,8 +171,8 @@ func (t *Table) postBlinds() {
 			sb.Status = StatusAllIn
 		}
 
-		fmt.Printf("Player %s posts small blind: %d (remaining: %d)\n",
-			sb.ID, amount, sb.Chips)
+		t.Logger.Info("post small blind",
+			"player_id", sb.ID, "amount", amount, "remaining", sb.Chips)
 	}
 
 	// 收取大盲
@@ -177,8 +186,8 @@ func (t *Table) postBlinds() {
 			bb.Status = StatusAllIn
 		}
 
-		fmt.Printf("Player %s posts big blind: %d (remaining: %d)\n",
-			bb.ID, amount, bb.Chips)
+		t.Logger.Info("post big blind",
+			"player_id", bb.ID, "amount", amount, "remaining", bb.Chips)
 	}
 }
 
@@ -211,8 +220,8 @@ func (t *Table) postBlindHeadsUp(smallBlindAmount, bigBlindAmount int64) {
 			buttonPlayer.Status = StatusAllIn
 		}
 
-		fmt.Printf("Player %s (Button) posts small blind: %d (remaining: %d)\n",
-			buttonPlayer.ID, amount, buttonPlayer.Chips)
+		t.Logger.Info("post small blind (button)",
+			"player_id", buttonPlayer.ID, "amount", amount, "remaining", buttonPlayer.Chips)
 	}
 
 	// 收取大盲 (另一位玩家)
@@ -225,8 +234,8 @@ func (t *Table) postBlindHeadsUp(smallBlindAmount, bigBlindAmount int64) {
 			otherPlayer.Status = StatusAllIn
 		}
 
-		fmt.Printf("Player %s posts big blind: %d (remaining: %d)\n",
-			otherPlayer.ID, amount, otherPlayer.Chips)
+		t.Logger.Info("post big blind",
+			"player_id", otherPlayer.ID, "amount", amount, "remaining", otherPlayer.Chips)
 	}
 }
 
@@ -240,7 +249,7 @@ func (t *Table) Run() {
 		case cmd := <-t.ActionCh:
 			t.processCommand(cmd)
 		case <-ticker.C:
-			// 定期檢查是否可以開始新手牌
+			t.checkDisconnectTimeouts()
 			t.tryStartNewHand()
 		case <-t.CloseCh:
 			return
@@ -261,6 +270,12 @@ func (t *Table) processCommand(cmd PlayerAction) {
 		result.Err = t.PlayerSitDown(cmd.PlayerID)
 	case ActionStandUp:
 		result.WasInHand, result.Err = t.PlayerStandUp(cmd.PlayerID)
+	case ActionDisconnect:
+		t.handleDisconnect(cmd.PlayerID)
+		return
+	case ActionReconnect:
+		t.handleReconnect(cmd.PlayerID)
+		return
 	default:
 		// 遊戲動作 (Fold/Check/Call/Bet/Raise/AllIn) 走原有邏輯
 		t.handleAction(cmd)
@@ -310,8 +325,9 @@ func (t *Table) removePlayer(playerID string) error {
 		player.StandUp()
 	}
 
-	// 從 map 和 seat 移除
+	// 從 map、seat、斷線記錄移除
 	delete(t.Players, playerID)
+	delete(t.DisconnectedAt, playerID)
 	if player.SeatIdx >= 0 && player.SeatIdx < 9 {
 		t.Seats[player.SeatIdx] = nil
 	}
@@ -336,7 +352,7 @@ func (t *Table) tryStartNewHand() {
 
 	// 需要至少 2 個玩家才能開始
 	if readyPlayers >= 2 {
-		fmt.Printf("Auto-starting new hand with %d players\n", readyPlayers)
+		t.Logger.Info("auto-starting new hand", "ready_players", readyPlayers)
 		t.StartHand()
 	}
 }
@@ -471,8 +487,8 @@ func (t *Table) nextStreet() {
 		// 分配所有底池給最後一位玩家
 		totalPot := t.Pots.Total()
 		lastActivePlayer.Chips += totalPot
-		fmt.Printf("Player %s wins %d (all others folded)\n",
-			lastActivePlayer.ID, totalPot)
+		t.Logger.Info("player wins (all others folded)",
+			"player_id", lastActivePlayer.ID, "amount", totalPot)
 
 		// 結束這手牌
 		t.endHand()
@@ -503,21 +519,21 @@ func (t *Table) nextStreet() {
 		t.Deck.Draw(1)
 		// 發 3 張公牌
 		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(3)...)
-		fmt.Printf("Dealing Flop: %v\n", t.CommunityCards)
+		t.Logger.Info("dealing flop", "cards", t.CommunityCards)
 	case StateFlop:
 		t.State = StateTurn
 		// Burn 一張牌
 		t.Deck.Draw(1)
 		// 發 1 張公牌 (Turn)
 		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
-		fmt.Printf("Dealing Turn: %v\n", t.CommunityCards)
+		t.Logger.Info("dealing turn", "cards", t.CommunityCards)
 	case StateTurn:
 		t.State = StateRiver
 		// Burn 一張牌
 		t.Deck.Draw(1)
 		// 發 1 張公牌 (River)
 		t.CommunityCards = append(t.CommunityCards, t.Deck.Draw(1)...)
-		fmt.Printf("Dealing River: %v\n", t.CommunityCards)
+		t.Logger.Info("dealing river", "cards", t.CommunityCards)
 	case StateRiver:
 		t.State = StateShowdown
 		t.Showdown()
@@ -555,7 +571,7 @@ func (t *Table) findNextActiveSeat(startPos int) int {
 
 // Showdown 執行攤牌邏輯並分配底池
 func (t *Table) Showdown() {
-	fmt.Printf("=== Showdown ===\n")
+	t.Logger.Info("showdown")
 
 	// 使用 Distribute 函數計算 payouts
 	payouts := Distribute(t.Pots.Pots, t.Players, t.CommunityCards)
@@ -564,8 +580,8 @@ func (t *Table) Showdown() {
 	for playerID, amount := range payouts {
 		if player, exists := t.Players[playerID]; exists {
 			player.Chips += amount
-			fmt.Printf("Player %s wins %d chips (final: %d)\n",
-				playerID, amount, player.Chips)
+			t.Logger.Info("player wins chips",
+				"player_id", playerID, "amount", amount, "final_chips", player.Chips)
 		}
 	}
 
@@ -575,7 +591,7 @@ func (t *Table) Showdown() {
 
 // endHand 結束當前手牌並準備下一手
 func (t *Table) endHand() {
-	fmt.Printf("=== Hand Complete ===\n")
+	t.Logger.Info("hand complete")
 
 	// 移動 Dealer Button
 	t.rotateDealerButton()
@@ -602,12 +618,12 @@ func (t *Table) rotateDealerButton() {
 		// 下一手牌開始時，這些狀態會被重置為 StatusPlaying
 		if p := t.Seats[pos]; p != nil && p.Chips > 0 && p.Status != StatusSittingOut {
 			t.DealerPos = pos
-			fmt.Printf("Dealer button moved to seat %d\n", t.DealerPos)
+			t.Logger.Info("dealer button moved", "seat", t.DealerPos)
 			return
 		}
 	}
 	// 如果找不到有效座位，保持當前位置
-	fmt.Printf("No valid seat found for dealer rotation, keeping at seat %d\n", t.DealerPos)
+	t.Logger.Warn("no valid seat for dealer rotation, keeping current", "seat", t.DealerPos)
 }
 
 // resetPlayersForNextHand 重置所有玩家狀態以準備下一手牌
@@ -625,8 +641,66 @@ func (t *Table) resetPlayersForNextHand() {
 			} else {
 				// 籌碼為 0，自動站起
 				p.Status = StatusSittingOut
-				fmt.Printf("Player %s has no chips, sitting out\n", p.ID)
+				t.Logger.Info("player has no chips, sitting out", "player_id", p.ID)
 			}
+		}
+	}
+}
+
+// handleDisconnect 記錄玩家斷線時間
+func (t *Table) handleDisconnect(playerID string) {
+	_, exists := t.Players[playerID]
+	if !exists {
+		return
+	}
+	t.DisconnectedAt[playerID] = time.Now()
+	t.Logger.Info("player disconnected", "player_id", playerID, "table_id", t.ID)
+}
+
+// handleReconnect 清除玩家斷線記錄
+func (t *Table) handleReconnect(playerID string) {
+	if _, was := t.DisconnectedAt[playerID]; was {
+		delete(t.DisconnectedAt, playerID)
+		t.Logger.Info("player reconnected", "player_id", playerID, "table_id", t.ID)
+	}
+}
+
+// checkDisconnectTimeouts 檢查並處理斷線超時的玩家
+func (t *Table) checkDisconnectTimeouts() {
+	if len(t.DisconnectedAt) == 0 {
+		return
+	}
+
+	now := time.Now()
+	for playerID, disconnectedAt := range t.DisconnectedAt {
+		if now.Sub(disconnectedAt) < t.DisconnectTimeout {
+			continue
+		}
+
+		// 超時：清除斷線記錄
+		delete(t.DisconnectedAt, playerID)
+
+		player, exists := t.Players[playerID]
+		if !exists {
+			continue
+		}
+
+		t.Logger.Info("player disconnect timeout, auto-action", "player_id", playerID)
+
+		// 如果輪到該玩家且可以行動，自動 Fold
+		if t.State != StateIdle {
+			currentSeat := t.Seats[t.CurrentPos]
+			if currentSeat != nil && currentSeat.ID == playerID && player.CanAct() {
+				t.handleAction(PlayerAction{
+					PlayerID: playerID,
+					Type:     ActionFold,
+				})
+			}
+		}
+
+		// StandUp（如果不是 AllIn）
+		if player.Status != StatusAllIn {
+			player.StandUp()
 		}
 	}
 }

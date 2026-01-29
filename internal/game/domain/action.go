@@ -17,6 +17,8 @@ const (
 	ActionLeaveTable // 離開桌子
 	ActionSitDown    // 坐下
 	ActionStandUp    // 站起
+	ActionDisconnect // 玩家斷線
+	ActionReconnect  // 玩家重連
 )
 
 // PlayerAction 是核心邏輯使用的標準動作結構 (Royal Language)

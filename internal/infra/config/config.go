@@ -9,8 +9,9 @@ import (
 
 type Config struct {
 	Server struct {
-		Port string `yaml:"port"`
-		Host string `yaml:"host"`
+		Port           string   `yaml:"port"`
+		Host           string   `yaml:"host"`
+		AllowedOrigins []string `yaml:"allowed_origins"` // WebSocket Origin 白名單，空表示允許所有（開發模式）
 	} `yaml:"server"`
 	Auth struct {
 		JWTSecret        string `yaml:"jwt_secret"`

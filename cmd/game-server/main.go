@@ -21,7 +21,12 @@ func main() {
 		log.Fatalf("failed to initialize app: %v", err)
 	}
 
-	// 2. 啟動背景服務
+	// 2. 接線
+	app.SessionManager.SetTableNotifier(app.TableManager)
+	app.WSHandler.SetAllowedOrigins(app.Config.Server.AllowedOrigins)
+	app.TableManager.SetLogger(app.Logger)
+
+	// 3. 啟動背景服務
 	go app.Hub.Run()
 	app.Logger.Info("server started",
 		zap.String("host", app.Config.Server.Host),

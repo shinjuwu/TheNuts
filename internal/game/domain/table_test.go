@@ -2,6 +2,7 @@ package domain
 
 import (
 	"testing"
+	"time"
 )
 
 func TestSimpleBettingRound(t *testing.T) {
@@ -443,5 +444,245 @@ func TestProcessCommand_StandUp(t *testing.T) {
 
 	if p1.Status != StatusSittingOut {
 		t.Errorf("Expected status SittingOut, got %v", p1.Status)
+	}
+}
+
+// === 斷線/重連測試 ===
+
+// TestDisconnect_RecordTime 送 ActionDisconnect → 驗證 DisconnectedAt 有記錄
+func TestDisconnect_RecordTime(t *testing.T) {
+	table := NewTable("dc-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	before := time.Now()
+	table.processCommand(PlayerAction{
+		Type:     ActionDisconnect,
+		PlayerID: "p1",
+	})
+
+	dcTime, exists := table.DisconnectedAt["p1"]
+	if !exists {
+		t.Fatal("Expected DisconnectedAt entry for p1")
+	}
+	if dcTime.Before(before) {
+		t.Error("DisconnectedAt should be >= test start time")
+	}
+}
+
+// TestDisconnect_PlayerNotFound 不存在的玩家斷線 → 不 panic，無記錄
+func TestDisconnect_PlayerNotFound(t *testing.T) {
+	table := NewTable("dc-test")
+
+	// Should not panic
+	table.processCommand(PlayerAction{
+		Type:     ActionDisconnect,
+		PlayerID: "nonexistent",
+	})
+
+	if len(table.DisconnectedAt) != 0 {
+		t.Error("Expected no DisconnectedAt entries for nonexistent player")
+	}
+}
+
+// TestReconnect_ClearDisconnect 送 ActionReconnect → 驗證 DisconnectedAt 被清除
+func TestReconnect_ClearDisconnect(t *testing.T) {
+	table := NewTable("dc-test")
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 先斷線
+	table.processCommand(PlayerAction{
+		Type:     ActionDisconnect,
+		PlayerID: "p1",
+	})
+	if _, exists := table.DisconnectedAt["p1"]; !exists {
+		t.Fatal("Expected DisconnectedAt entry after disconnect")
+	}
+
+	// 再重連
+	table.processCommand(PlayerAction{
+		Type:     ActionReconnect,
+		PlayerID: "p1",
+	})
+	if _, exists := table.DisconnectedAt["p1"]; exists {
+		t.Error("Expected DisconnectedAt cleared after reconnect")
+	}
+}
+
+// TestDisconnectTimeout_AutoFoldCurrentPlayer 斷線玩家輪到行動 + 超時 → 自動 Fold + StandUp
+func TestDisconnectTimeout_AutoFoldCurrentPlayer(t *testing.T) {
+	table := NewTable("dc-test")
+	table.DisconnectTimeout = 1 * time.Millisecond
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0 // p1's turn
+	table.MinBet = 20
+
+	// 記錄斷線
+	table.DisconnectedAt["p1"] = time.Now().Add(-1 * time.Second) // 已過超時
+
+	// 觸發超時檢查
+	table.checkDisconnectTimeouts()
+
+	// p1 應該被自動 Fold 並 StandUp
+	if p1.Status != StatusSittingOut {
+		t.Errorf("Expected p1 status SittingOut after timeout, got %v", p1.Status)
+	}
+	if _, exists := table.DisconnectedAt["p1"]; exists {
+		t.Error("Expected DisconnectedAt cleared after timeout")
+	}
+}
+
+// TestDisconnectTimeout_NotCurrentPlayer 斷線玩家不是當前行動者 → 超時後僅 StandUp
+func TestDisconnectTimeout_NotCurrentPlayer(t *testing.T) {
+	table := NewTable("dc-test")
+	table.DisconnectTimeout = 1 * time.Millisecond
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 1 // p2's turn, NOT p1
+	table.MinBet = 20
+
+	// p1 斷線超時
+	table.DisconnectedAt["p1"] = time.Now().Add(-1 * time.Second)
+
+	table.checkDisconnectTimeouts()
+
+	// p1 不是當前行動者，不應 Fold，但應 StandUp
+	if p1.Status != StatusSittingOut {
+		t.Errorf("Expected p1 status SittingOut after timeout, got %v", p1.Status)
+	}
+	// p2 不受影響
+	if p2.Status != StatusPlaying {
+		t.Errorf("Expected p2 status unchanged (Playing), got %v", p2.Status)
+	}
+}
+
+// TestDisconnectTimeout_AllInPlayer AllIn 斷線玩家 → 超時後不做任何處理
+func TestDisconnectTimeout_AllInPlayer(t *testing.T) {
+	table := NewTable("dc-test")
+	table.DisconnectTimeout = 1 * time.Millisecond
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 0, Status: StatusAllIn, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 1 // p2's turn
+	table.MinBet = 20
+
+	// p1 AllIn 且斷線超時
+	table.DisconnectedAt["p1"] = time.Now().Add(-1 * time.Second)
+
+	table.checkDisconnectTimeouts()
+
+	// AllIn 玩家不應被 StandUp（StandUp 會返回 error）
+	if p1.Status != StatusAllIn {
+		t.Errorf("Expected AllIn player status unchanged, got %v", p1.Status)
+	}
+	// 斷線記錄應被清除
+	if _, exists := table.DisconnectedAt["p1"]; exists {
+		t.Error("Expected DisconnectedAt cleared even for AllIn player")
+	}
+}
+
+// TestDisconnectTimeout_ReconnectBeforeTimeout 斷線後重連（未超時）→ 不自動 Fold
+func TestDisconnectTimeout_ReconnectBeforeTimeout(t *testing.T) {
+	table := NewTable("dc-test")
+	table.DisconnectTimeout = 1 * time.Hour // 很長的超時
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+
+	table.State = StatePreFlop
+	table.CurrentPos = 0 // p1's turn
+	table.MinBet = 20
+
+	// 斷線
+	table.processCommand(PlayerAction{
+		Type:     ActionDisconnect,
+		PlayerID: "p1",
+	})
+
+	// 觸發超時檢查（不應超時，因為 timeout 很長）
+	table.checkDisconnectTimeouts()
+
+	// p1 應該還在斷線狀態，未被強制動作
+	if p1.Status != StatusPlaying {
+		t.Errorf("Expected p1 still Playing (not timed out), got %v", p1.Status)
+	}
+	if _, exists := table.DisconnectedAt["p1"]; !exists {
+		t.Error("Expected DisconnectedAt still present (not timed out)")
+	}
+
+	// 重連
+	table.processCommand(PlayerAction{
+		Type:     ActionReconnect,
+		PlayerID: "p1",
+	})
+
+	// 再觸發超時檢查
+	table.checkDisconnectTimeouts()
+
+	// p1 依然正常
+	if p1.Status != StatusPlaying {
+		t.Errorf("Expected p1 still Playing after reconnect, got %v", p1.Status)
+	}
+}
+
+// TestDisconnectTimeout_BeforeTryStartNewHand 超時 StandUp 在 tryStartNewHand 之前執行
+// 驗證斷線超時玩家不被計入 readyPlayers
+func TestDisconnectTimeout_BeforeTryStartNewHand(t *testing.T) {
+	table := NewTable("dc-test")
+	table.DisconnectTimeout = 1 * time.Millisecond
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying}
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+
+	table.State = StateIdle
+
+	// p1 斷線超時
+	table.DisconnectedAt["p1"] = time.Now().Add(-1 * time.Second)
+
+	// 先執行 checkDisconnectTimeouts，再 tryStartNewHand
+	// 模擬 Run() 中 ticker 的行為
+	table.checkDisconnectTimeouts()
+
+	// p1 應已 StandUp
+	if p1.Status != StatusSittingOut {
+		t.Errorf("Expected p1 SittingOut after disconnect timeout, got %v", p1.Status)
+	}
+
+	// 此時只剩 p2 一個 Playing 玩家，tryStartNewHand 不應開始
+	table.tryStartNewHand()
+	if table.State != StateIdle {
+		t.Errorf("Expected table still Idle (only 1 ready player), got %v", table.State)
 	}
 }

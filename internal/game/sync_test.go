@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,8 +16,8 @@ import (
 
 // Mock Session Repo
 type mockSessionRepo struct {
-	activeSessions map[uuid.UUID]*repository.GameSession // Key: sessionID (Not PlayerID? GetByID uses SessionID)
-	// Helper to lookup by player
+	mu               sync.RWMutex
+	activeSessions   map[uuid.UUID]*repository.GameSession
 	sessionsByPlayer map[uuid.UUID]*repository.GameSession
 	updatedChips     map[uuid.UUID]int64
 }
@@ -50,6 +51,8 @@ func (m *mockSessionRepo) GetActiveByPlayerID(ctx context.Context, playerID uuid
 }
 
 func (m *mockSessionRepo) Update(ctx context.Context, session *repository.GameSession) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.updatedChips[session.ID] = session.CurrentChips
 	return nil
 }
@@ -111,11 +114,12 @@ func TestChipSync(t *testing.T) {
 	table.OnHandComplete(table)
 
 	// 8. Verify
-	// Check if Update was called with 2500
-	// Wait a bit if async? No, the implementation in TableManager.onHandComplete is synchronous loops.
-	// But UpdateSessionChips calls sessionRepo.Update synchronously.
+	// onHandComplete 為異步執行，等待 goroutine 完成
+	time.Sleep(100 * time.Millisecond)
 
+	mockRepo.mu.RLock()
 	chips, ok := mockRepo.updatedChips[sessionID]
+	mockRepo.mu.RUnlock()
 	if !ok {
 		t.Fatal("Session Update was NOT called")
 	}

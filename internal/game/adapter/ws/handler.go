@@ -12,18 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// TODO: 生產環境應該檢查 Origin Header
-		// 建議使用白名單機制，例如：
-		// origin := r.Header.Get("Origin")
-		// return origin == "https://yourdomain.com"
-		return true
-	},
-}
-
 type Handler struct {
 	Hub            *Hub
 	TableManager   *game.TableManager
@@ -31,6 +19,7 @@ type Handler struct {
 	GameService    *service.GameService
 	TicketStore    auth.TicketStore
 	Logger         *zap.Logger
+	upgrader       websocket.Upgrader
 }
 
 func NewHandler(
@@ -41,13 +30,55 @@ func NewHandler(
 	ticketStore auth.TicketStore,
 	logger *zap.Logger,
 ) *Handler {
-	return &Handler{
+	h := &Handler{
 		Hub:            hub,
 		TableManager:   tableMgr,
 		SessionManager: sessionMgr,
 		GameService:    gameService,
 		TicketStore:    ticketStore,
 		Logger:         logger,
+	}
+	h.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			return true // 預設允許所有（透過 SetAllowedOrigins 覆蓋）
+		},
+	}
+	return h
+}
+
+// SetAllowedOrigins 設定 WebSocket Origin 白名單
+// 空清單表示允許所有來源（開發模式）
+func (h *Handler) SetAllowedOrigins(origins []string) {
+	if len(origins) == 0 {
+		h.Logger.Warn("no allowed origins configured, accepting all origins (development mode)")
+		return
+	}
+
+	allowed := make(map[string]bool, len(origins))
+	for _, o := range origins {
+		allowed[o] = true
+	}
+
+	h.Logger.Info("WebSocket origin whitelist configured",
+		zap.Strings("allowed_origins", origins),
+	)
+
+	h.upgrader.CheckOrigin = func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// 無 Origin header（非瀏覽器客戶端）→ 允許
+			return true
+		}
+		if allowed[origin] {
+			return true
+		}
+		h.Logger.Warn("WebSocket connection rejected: origin not allowed",
+			zap.String("origin", origin),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		return false
 	}
 }
 
@@ -77,7 +108,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// 升級到 WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.Logger.Error("websocket upgrade failed", zap.Error(err))
 		return

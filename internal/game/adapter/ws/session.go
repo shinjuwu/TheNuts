@@ -163,12 +163,21 @@ func (s *PlayerSession) GetSnapshot() SessionSnapshot {
 	}
 }
 
+// TableNotifier 通知牌桌玩家斷線/重連
+type TableNotifier interface {
+	NotifyDisconnect(playerID, tableID string)
+	NotifyReconnect(playerID, tableID string)
+}
+
 // SessionManager 管理所有玩家会话
 type SessionManager struct {
 	sessions    map[uuid.UUID]*PlayerSession // playerID -> session
 	gameService *service.GameService
 	logger      *zap.Logger
 	mu          sync.RWMutex
+
+	// 牌桌通知
+	tableNotifier TableNotifier
 
 	// 清理配置
 	cleanupInterval time.Duration
@@ -196,6 +205,11 @@ func NewSessionManager(
 	return sm
 }
 
+// SetTableNotifier 設定牌桌通知器
+func (sm *SessionManager) SetTableNotifier(notifier TableNotifier) {
+	sm.tableNotifier = notifier
+}
+
 // AddSession 添加新会话
 func (sm *SessionManager) AddSession(session *PlayerSession) {
 	sm.mu.Lock()
@@ -203,10 +217,26 @@ func (sm *SessionManager) AddSession(session *PlayerSession) {
 
 	// 如果已有会话，先清理旧会话
 	if oldSession, exists := sm.sessions[session.PlayerID]; exists {
-		sm.logger.Warn("replacing existing session",
+		sm.logger.Info("replacing existing session (possible reconnect)",
 			zap.String("player_id", session.PlayerID.String()),
 			zap.Bool("old_connected", oldSession.IsConnected),
+			zap.String("old_table", oldSession.CurrentTableID),
 		)
+
+		// 如果舊 session 在牌桌上，繼承狀態到新 session
+		if oldSession.CurrentTableID != "" {
+			session.CurrentTableID = oldSession.CurrentTableID
+			session.SeatNo = oldSession.SeatNo
+			session.IsSeated = oldSession.IsSeated
+			session.GameSessionID = oldSession.GameSessionID
+			session.Chips = oldSession.Chips
+
+			// 通知牌桌玩家已重連
+			if sm.tableNotifier != nil {
+				sm.tableNotifier.NotifyReconnect(session.PlayerID.String(), oldSession.CurrentTableID)
+			}
+		}
+
 		oldSession.Disconnect()
 	}
 
@@ -252,16 +282,16 @@ func (sm *SessionManager) HandleDisconnect(playerID uuid.UUID) error {
 
 	session.Disconnect()
 
-	// 如果玩家在游戏中，进行必要的清理
+	// 如果玩家在游戏中，通知牌桌玩家斷線
 	if session.IsSeated && session.CurrentTableID != "" {
 		sm.logger.Info("player disconnected while in game",
 			zap.String("player_id", playerID.String()),
 			zap.String("table_id", session.CurrentTableID),
 		)
 
-		// TODO: 通知桌子玩家断线
-		// 可以设置玩家为 "disconnected" 状态，给予一定时间重连
-		// 如果超时未重连，则自动 fold/sit out
+		if sm.tableNotifier != nil {
+			sm.tableNotifier.NotifyDisconnect(playerID.String(), session.CurrentTableID)
+		}
 	}
 
 	return nil
