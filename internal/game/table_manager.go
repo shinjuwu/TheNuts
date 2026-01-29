@@ -20,6 +20,9 @@ type TableManager struct {
 
 	// 遊戲事件回調（由 main.go 注入，轉發到 WebSocket）
 	onTableEvent func(event domain.TableEvent)
+
+	// WS 層籌碼同步回調（由 main.go 注入，更新 PlayerSession.Chips）
+	onSessionChipsUpdate func(playerID string, chips int64)
 }
 
 func NewTableManager(gs *service.GameService) *TableManager {
@@ -38,6 +41,11 @@ func (tm *TableManager) SetLogger(logger *zap.Logger) {
 // SetOnTableEvent 設定遊戲事件回調（應在建表前呼叫）
 func (tm *TableManager) SetOnTableEvent(fn func(event domain.TableEvent)) {
 	tm.onTableEvent = fn
+}
+
+// SetOnSessionChipsUpdate 設定 WS 層籌碼同步回調（應在建表前呼叫）
+func (tm *TableManager) SetOnSessionChipsUpdate(fn func(playerID string, chips int64)) {
+	tm.onSessionChipsUpdate = fn
 }
 
 func (tm *TableManager) GetOrCreateTable(id string) *domain.Table {
@@ -110,6 +118,13 @@ func (tm *TableManager) onHandComplete(t *domain.Table) {
 
 	// 異步同步到資料庫，不阻塞 Table.Run()
 	go tm.syncPlayerChips(playerChips)
+
+	// 同步更新 WS 層的 PlayerSession.Chips
+	if tm.onSessionChipsUpdate != nil {
+		for id, chips := range playerChips {
+			tm.onSessionChipsUpdate(id, chips)
+		}
+	}
 }
 
 // syncPlayerChips 異步將玩家籌碼同步到資料庫

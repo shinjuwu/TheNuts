@@ -28,6 +28,15 @@ func main() {
 	app.SessionManager.SetTableNotifier(app.TableManager)
 	app.WSHandler.SetAllowedOrigins(app.Config.Server.AllowedOrigins)
 	app.TableManager.SetLogger(app.Logger)
+	app.TableManager.SetOnSessionChipsUpdate(func(playerID string, chips int64) {
+		playerUUID, err := uuid.Parse(playerID)
+		if err != nil {
+			return
+		}
+		if session, exists := app.SessionManager.GetSession(playerUUID); exists {
+			session.UpdateChips(chips)
+		}
+	})
 	app.TableManager.SetOnTableEvent(func(event domain.TableEvent) {
 		resp := ws.Response{
 			Type:      string(event.Type),

@@ -67,6 +67,46 @@ func (m *mockSessionRepo) End(ctx context.Context, id uuid.UUID, finalChips int6
 // Interface is in infra/repository/interfaces.go. GameSessionRepository has Create, GetByID, GetActiveByPlayerID, Update, End.
 // We implemented all 5. So we are good.
 
+func TestSessionChipsUpdate(t *testing.T) {
+	// 1. Setup
+	gs := service.NewGameService(nil, nil, newMockRepo(), nil, zap.NewNop())
+	tm := NewTableManager(gs)
+
+	// 記錄回調收到的結果
+	callbackResults := make(map[string]int64)
+	var cbMu sync.Mutex
+	tm.SetOnSessionChipsUpdate(func(playerID string, chips int64) {
+		cbMu.Lock()
+		defer cbMu.Unlock()
+		callbackResults[playerID] = chips
+	})
+
+	// 2. Create Table & Add Players
+	table := tm.GetOrCreateTable("test-session-sync")
+
+	p1ID := uuid.New().String()
+	p2ID := uuid.New().String()
+	table.Players[p1ID] = &domain.Player{ID: p1ID, Chips: 3000}
+	table.Players[p2ID] = &domain.Player{ID: p2ID, Chips: 1500}
+
+	// 3. Fire onHandComplete
+	table.FireOnHandComplete()
+
+	// 4. Verify — onSessionChipsUpdate 是同步調用的，不需要等待
+	cbMu.Lock()
+	defer cbMu.Unlock()
+
+	if len(callbackResults) != 2 {
+		t.Fatalf("expected 2 callback calls, got %d", len(callbackResults))
+	}
+	if callbackResults[p1ID] != 3000 {
+		t.Errorf("expected player1 chips=3000, got %d", callbackResults[p1ID])
+	}
+	if callbackResults[p2ID] != 1500 {
+		t.Errorf("expected player2 chips=1500, got %d", callbackResults[p2ID])
+	}
+}
+
 func TestChipSync(t *testing.T) {
 	// 1. Setup Mock Repo
 	mockRepo := newMockRepo()
