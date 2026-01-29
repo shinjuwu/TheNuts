@@ -23,30 +23,34 @@ func TestAutoGameFlow(t *testing.T) {
 	table.DealerPos = 0
 
 	// 3. 在後台啟動 Table.Run()
-	go table.Run()
+	done := make(chan bool)
+	go func() {
+		table.Run()
+		done <- true
+	}()
 
 	// 4. 等待自動開局（應該在 1 秒內觸發）
 	time.Sleep(1500 * time.Millisecond)
 
-	// 5. 驗證遊戲已經開始
+	// 5. 停止 table 以便安全讀取狀態
+	close(table.CloseCh)
+	<-done // 等待 goroutine 完成
+
+	// 6. 驗證遊戲已經開始（現在可以安全讀取）
 	if table.State == StateIdle {
 		t.Error("Expected game to auto-start, but still in StateIdle")
 	}
 
-	// 6. 驗證玩家已經收到手牌
+	// 7. 驗證玩家已經收到手牌
 	if len(p1.HoleCards) != 2 {
 		t.Errorf("Expected p1 to have 2 hole cards, got %d", len(p1.HoleCards))
 	}
 
-	// 7. 驗證盲注已經收取
+	// 8. 驗證盲注已經收取
 	totalBets := p1.CurrentBet + p2.CurrentBet + p3.CurrentBet
 	if totalBets == 0 {
 		t.Error("Expected blinds to be posted, but total bets is 0")
 	}
-
-	// 8. 清理
-	close(table.CloseCh)
-	time.Sleep(100 * time.Millisecond)
 
 	t.Logf("Auto-game flow test passed. Game state: %v", table.State)
 }

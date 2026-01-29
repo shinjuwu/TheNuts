@@ -182,17 +182,17 @@ func (e *PokerEngine) GetState() core.GameState {
 
 // AddPlayer 實現 GameEngine 介面
 func (e *PokerEngine) AddPlayer(player *core.Player) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// 找到空座位
+	// 找空座位（讀取 Seats 仍需同步）
+	// 透過 ActionCh 發送，避免直接存取 table 資料
 	seatIdx := -1
+	e.mu.RLock()
 	for i, seat := range e.table.Seats {
 		if seat == nil {
 			seatIdx = i
 			break
 		}
 	}
+	e.mu.RUnlock()
 
 	if seatIdx == -1 {
 		return fmt.Errorf("table is full")
@@ -209,8 +209,19 @@ func (e *PokerEngine) AddPlayer(player *core.Player) error {
 		HasActed:   false,
 	}
 
-	e.table.Seats[seatIdx] = domainPlayer
-	e.table.Players[player.ID] = domainPlayer
+	// 透過 ActionCh 發送，由 Table.Run() 統一處理
+	resultCh := make(chan domain.ActionResult, 1)
+	e.table.ActionCh <- domain.PlayerAction{
+		Type:     domain.ActionJoinTable,
+		Player:   domainPlayer,
+		SeatIdx:  seatIdx,
+		ResultCh: resultCh,
+	}
+	result := <-resultCh
+
+	if result.Err != nil {
+		return result.Err
+	}
 
 	// 廣播玩家加入事件
 	e.BroadcastEvent(core.GameEvent{
@@ -227,17 +238,18 @@ func (e *PokerEngine) AddPlayer(player *core.Player) error {
 
 // RemovePlayer 實現 GameEngine 介面
 func (e *PokerEngine) RemovePlayer(playerID string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	player, ok := e.table.Players[playerID]
-	if !ok {
-		return fmt.Errorf("player not found: %s", playerID)
+	// 透過 ActionCh 發送，由 Table.Run() 統一處理
+	resultCh := make(chan domain.ActionResult, 1)
+	e.table.ActionCh <- domain.PlayerAction{
+		Type:     domain.ActionLeaveTable,
+		PlayerID: playerID,
+		ResultCh: resultCh,
 	}
+	result := <-resultCh
 
-	// 移除玩家
-	delete(e.table.Players, playerID)
-	e.table.Seats[player.SeatIdx] = nil
+	if result.Err != nil {
+		return result.Err
+	}
 
 	// 廣播玩家離開事件
 	e.BroadcastEvent(core.GameEvent{

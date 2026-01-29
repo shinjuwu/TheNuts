@@ -177,8 +177,15 @@ func (s *GameService) CloseSession(sessionID string) error {
 	return nil
 }
 
+var (
+	sessionCounter int64
+	sessionMu      sync.Mutex
+)
+
 // 輔助函數: 生成會話ID
 func generateSessionID() string {
-	// TODO: 實現安全的會話ID生成
-	return fmt.Sprintf("session_%d", time.Now().UnixNano())
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	sessionCounter++
+	return fmt.Sprintf("session_%d_%d", time.Now().Unix(), sessionCounter)
 }

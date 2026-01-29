@@ -200,3 +200,248 @@ func TestDealerRotationSkipsNoChips(t *testing.T) {
 			table.DealerPos)
 	}
 }
+
+// TestProcessCommand_JoinTable 測試透過 processCommand 加入玩家
+func TestProcessCommand_JoinTable(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	player := &Player{
+		ID:      "p1",
+		SeatIdx: 0,
+		Chips:   1000,
+		Status:  StatusSittingOut,
+	}
+
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionJoinTable,
+		Player:   player,
+		SeatIdx:  0,
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err != nil {
+		t.Errorf("Expected no error, got %v", result.Err)
+	}
+
+	if table.Players["p1"] == nil {
+		t.Error("Expected player to be added to Players map")
+	}
+	if table.Seats[0] == nil {
+		t.Error("Expected player to be added to Seats[0]")
+	}
+}
+
+// TestProcessCommand_JoinTable_SeatOccupied 測試座位被佔用時的錯誤處理
+func TestProcessCommand_JoinTable_SeatOccupied(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 先加入一個玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusSittingOut}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 嘗試加入另一個玩家到同一座位
+	p2 := &Player{ID: "p2", SeatIdx: 0, Chips: 1000, Status: StatusSittingOut}
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionJoinTable,
+		Player:   p2,
+		SeatIdx:  0,
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err == nil {
+		t.Error("Expected error for occupied seat")
+	}
+	if table.Players["p2"] != nil {
+		t.Error("p2 should not be added when seat is occupied")
+	}
+}
+
+// TestProcessCommand_JoinTable_DuplicatePlayer 測試玩家重複加入的錯誤處理
+func TestProcessCommand_JoinTable_DuplicatePlayer(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 先加入玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusSittingOut}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 嘗試再次加入同一個玩家ID（不同座位）
+	p1dup := &Player{ID: "p1", SeatIdx: 1, Chips: 1000, Status: StatusSittingOut}
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionJoinTable,
+		Player:   p1dup,
+		SeatIdx:  1,
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err == nil {
+		t.Error("Expected error for duplicate player")
+	}
+}
+
+// TestProcessCommand_LeaveTable 測試透過 processCommand 離開桌子
+func TestProcessCommand_LeaveTable(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 先加入玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusSittingOut}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 離開桌子
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionLeaveTable,
+		PlayerID: "p1",
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err != nil {
+		t.Errorf("Expected no error, got %v", result.Err)
+	}
+
+	if table.Players["p1"] != nil {
+		t.Error("Expected player to be removed from Players map")
+	}
+	if table.Seats[0] != nil {
+		t.Error("Expected player to be removed from Seats[0]")
+	}
+}
+
+// TestProcessCommand_LeaveTable_WhilePlaying 測試 Playing 狀態離桌（自動 Fold）
+func TestProcessCommand_LeaveTable_WhilePlaying(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 加入 Playing 狀態的玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 離開桌子
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionLeaveTable,
+		PlayerID: "p1",
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err != nil {
+		t.Errorf("Expected no error (auto fold), got %v", result.Err)
+	}
+
+	if table.Players["p1"] != nil {
+		t.Error("Expected player to be removed after auto-fold")
+	}
+}
+
+// TestProcessCommand_LeaveTable_WhileAllIn 測試 AllIn 狀態離桌（應該被拒絕）
+func TestProcessCommand_LeaveTable_WhileAllIn(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 加入 AllIn 狀態的玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 0, Status: StatusAllIn}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 嘗試離開桌子
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionLeaveTable,
+		PlayerID: "p1",
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err == nil {
+		t.Error("Expected error for AllIn player trying to leave")
+	}
+
+	if table.Players["p1"] == nil {
+		t.Error("AllIn player should not be removed")
+	}
+}
+
+// TestProcessCommand_LeaveTable_NotFound 測試玩家不在桌上時的錯誤處理
+func TestProcessCommand_LeaveTable_NotFound(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionLeaveTable,
+		PlayerID: "nonexistent",
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err != ErrPlayerNotFound {
+		t.Errorf("Expected ErrPlayerNotFound, got %v", result.Err)
+	}
+}
+
+// TestProcessCommand_SitDown 測試透過 processCommand 坐下
+func TestProcessCommand_SitDown(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 加入 SittingOut 狀態的玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusSittingOut}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 坐下
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionSitDown,
+		PlayerID: "p1",
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err != nil {
+		t.Errorf("Expected no error, got %v", result.Err)
+	}
+
+	if p1.Status != StatusPlaying {
+		t.Errorf("Expected status Playing, got %v", p1.Status)
+	}
+}
+
+// TestProcessCommand_StandUp 測試透過 processCommand 站起
+func TestProcessCommand_StandUp(t *testing.T) {
+	table := NewTable("cmd-test")
+
+	// 加入 Playing 狀態的玩家
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying}
+	p1.HoleCards = []Card{NewCard(RankA, SuitSpade), NewCard(RankK, SuitSpade)}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	// 站起
+	resultCh := make(chan ActionResult, 1)
+	table.processCommand(PlayerAction{
+		Type:     ActionStandUp,
+		PlayerID: "p1",
+		ResultCh: resultCh,
+	})
+
+	result := <-resultCh
+	if result.Err != nil {
+		t.Errorf("Expected no error, got %v", result.Err)
+	}
+
+	if !result.WasInHand {
+		t.Error("Expected WasInHand to be true for Playing status")
+	}
+
+	if p1.Status != StatusSittingOut {
+		t.Errorf("Expected status SittingOut, got %v", p1.Status)
+	}
+}

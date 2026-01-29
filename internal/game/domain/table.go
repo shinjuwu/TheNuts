@@ -50,8 +50,6 @@ func NewTable(id string) *Table {
 var ErrPlayerNotFound = errors.New("player not found at table")
 
 // PlayerSitDown 讓指定玩家坐下（SittingOut → Playing）
-// NOTE: 此方法直接操作 Players map，與 Table.Run() goroutine 存在潛在資料競爭。
-// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
 func (t *Table) PlayerSitDown(playerID string) error {
 	player, exists := t.Players[playerID]
 	if !exists {
@@ -61,8 +59,6 @@ func (t *Table) PlayerSitDown(playerID string) error {
 }
 
 // PlayerStandUp 讓指定玩家站起（→ SittingOut）
-// NOTE: 此方法直接操作 Players map，與 Table.Run() goroutine 存在潛在資料競爭。
-// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
 func (t *Table) PlayerStandUp(playerID string) (wasInHand bool, err error) {
 	player, exists := t.Players[playerID]
 	if !exists {
@@ -241,8 +237,8 @@ func (t *Table) Run() {
 
 	for {
 		select {
-		case action := <-t.ActionCh:
-			t.handleAction(action)
+		case cmd := <-t.ActionCh:
+			t.processCommand(cmd)
 		case <-ticker.C:
 			// 定期檢查是否可以開始新手牌
 			t.tryStartNewHand()
@@ -250,6 +246,77 @@ func (t *Table) Run() {
 			return
 		}
 	}
+}
+
+// processCommand 統一處理來自 ActionCh 的命令（桌面管理 + 遊戲動作）
+func (t *Table) processCommand(cmd PlayerAction) {
+	var result ActionResult
+
+	switch cmd.Type {
+	case ActionJoinTable:
+		result.Err = t.addPlayer(cmd.Player, cmd.SeatIdx)
+	case ActionLeaveTable:
+		result.Err = t.removePlayer(cmd.PlayerID)
+	case ActionSitDown:
+		result.Err = t.PlayerSitDown(cmd.PlayerID)
+	case ActionStandUp:
+		result.WasInHand, result.Err = t.PlayerStandUp(cmd.PlayerID)
+	default:
+		// 遊戲動作 (Fold/Check/Call/Bet/Raise/AllIn) 走原有邏輯
+		t.handleAction(cmd)
+		return
+	}
+
+	// 回傳結果（如果有 ResultCh）
+	if cmd.ResultCh != nil {
+		cmd.ResultCh <- result
+	}
+}
+
+// addPlayer 將玩家加入桌子（私有方法，僅由 processCommand 調用）
+func (t *Table) addPlayer(player *Player, seatIdx int) error {
+	if player == nil {
+		return errors.New("player is nil")
+	}
+	if _, exists := t.Players[player.ID]; exists {
+		return errors.New("player already at table")
+	}
+	if seatIdx < 0 || seatIdx >= 9 {
+		return errors.New("invalid seat index")
+	}
+	if t.Seats[seatIdx] != nil {
+		return errors.New("seat is occupied")
+	}
+
+	t.Players[player.ID] = player
+	t.Seats[seatIdx] = player
+	return nil
+}
+
+// removePlayer 將玩家從桌子移除（私有方法，僅由 processCommand 調用）
+func (t *Table) removePlayer(playerID string) error {
+	player, exists := t.Players[playerID]
+	if !exists {
+		return ErrPlayerNotFound
+	}
+
+	// AllIn 玩家不允許離開（有籌碼在底池中）
+	if player.Status == StatusAllIn {
+		return errors.New("cannot leave table while all-in")
+	}
+
+	// 如果正在遊戲中，先自動 StandUp（會 Fold）
+	if player.Status == StatusPlaying {
+		player.StandUp()
+	}
+
+	// 從 map 和 seat 移除
+	delete(t.Players, playerID)
+	if player.SeatIdx >= 0 && player.SeatIdx < 9 {
+		t.Seats[player.SeatIdx] = nil
+	}
+
+	return nil
 }
 
 // tryStartNewHand 檢查是否可以開始新手牌，如果可以則自動開局

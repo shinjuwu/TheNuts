@@ -3,7 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
-	
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -204,6 +204,25 @@ func (h *MessageHandler) handleCashOut(playerID uuid.UUID, req Request) {
 	)
 }
 
+// sendTableCommand 透過 ActionCh 發送命令到 Table.Run() 並等待結果
+func (h *MessageHandler) sendTableCommand(table *domain.Table, cmd domain.PlayerAction) domain.ActionResult {
+	resultCh := make(chan domain.ActionResult, 1)
+	cmd.ResultCh = resultCh
+
+	select {
+	case table.ActionCh <- cmd:
+		// 等待結果（帶超時）
+		select {
+		case result := <-resultCh:
+			return result
+		case <-time.After(5 * time.Second):
+			return domain.ActionResult{Err: errors.New("table command timeout")}
+		}
+	default:
+		return domain.ActionResult{Err: errors.New("table action queue full")}
+	}
+}
+
 // handleJoinTable 处理加入桌子请求
 func (h *MessageHandler) handleJoinTable(playerID uuid.UUID, req Request) {
 	session, exists := h.sessionManager.GetSession(playerID)
@@ -232,11 +251,20 @@ func (h *MessageHandler) handleJoinTable(playerID uuid.UUID, req Request) {
 		HasActed:   false,
 	}
 
-	// 添加到桌子
-	// 注意：这里需要实现 table.AddPlayer 方法
-	table.Players[domainPlayer.ID] = domainPlayer
-	if req.SeatNo >= 0 && req.SeatNo < 9 {
-		table.Seats[req.SeatNo] = domainPlayer
+	// 透過 ActionCh 發送，由 Table.Run() 統一處理
+	result := h.sendTableCommand(table, domain.PlayerAction{
+		Type:    domain.ActionJoinTable,
+		Player:  domainPlayer,
+		SeatIdx: req.SeatNo,
+	})
+	if result.Err != nil {
+		h.logger.Warn("join table failed",
+			zap.String("player_id", playerID.String()),
+			zap.String("table_id", req.TableID),
+			zap.Error(result.Err),
+		)
+		h.sendError(playerID, "join_table_failed", result.Err.Error())
+		return
 	}
 
 	// 更新会话状态
@@ -273,11 +301,29 @@ func (h *MessageHandler) handleLeaveTable(playerID uuid.UUID, req Request) {
 		return
 	}
 
-	// 从 domain 层移除玩家
-	// 注意：需要实现完整的离开逻辑
+	// 获取桌子
+	table := h.tableManager.GetOrCreateTable(tableID)
+
+	// 透過 ActionCh 移除玩家
+	result := h.sendTableCommand(table, domain.PlayerAction{
+		Type:     domain.ActionLeaveTable,
+		PlayerID: playerID.String(),
+	})
+	if result.Err != nil {
+		h.logger.Warn("leave table failed",
+			zap.String("player_id", playerID.String()),
+			zap.String("table_id", tableID),
+			zap.Error(result.Err),
+		)
+		h.sendError(playerID, "leave_table_failed", result.Err.Error())
+		return
+	}
 
 	// 更新会话状态
 	session.LeaveTable()
+
+	// 广播桌子状态
+	h.broadcastTableState(tableID, table)
 
 	// 发送成功响应
 	h.sendResponse(playerID, "LEAVE_TABLE_SUCCESS", map[string]interface{}{
@@ -291,8 +337,6 @@ func (h *MessageHandler) handleLeaveTable(playerID uuid.UUID, req Request) {
 }
 
 // handleSitDown 处理坐下请求
-// NOTE: 直接操作 table.Players，與 Table.Run() goroutine 存在潛在資料競爭。
-// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
 func (h *MessageHandler) handleSitDown(playerID uuid.UUID, req Request) {
 	session, exists := h.sessionManager.GetSession(playerID)
 	if !exists {
@@ -308,13 +352,17 @@ func (h *MessageHandler) handleSitDown(playerID uuid.UUID, req Request) {
 
 	table := h.tableManager.GetOrCreateTable(tableID)
 
-	if err := table.PlayerSitDown(playerID.String()); err != nil {
+	result := h.sendTableCommand(table, domain.PlayerAction{
+		Type:     domain.ActionSitDown,
+		PlayerID: playerID.String(),
+	})
+	if result.Err != nil {
 		h.logger.Warn("sit down failed",
 			zap.String("player_id", playerID.String()),
 			zap.String("table_id", tableID),
-			zap.Error(err),
+			zap.Error(result.Err),
 		)
-		h.sendError(playerID, "sit_down_failed", err.Error())
+		h.sendError(playerID, "sit_down_failed", result.Err.Error())
 		return
 	}
 
@@ -333,8 +381,6 @@ func (h *MessageHandler) handleSitDown(playerID uuid.UUID, req Request) {
 }
 
 // handleStandUp 处理站起请求
-// NOTE: 直接操作 table.Players，與 Table.Run() goroutine 存在潛在資料競爭。
-// MVP 階段風險可控，未來應統一透過 ActionCh 序列化。
 func (h *MessageHandler) handleStandUp(playerID uuid.UUID, req Request) {
 	session, exists := h.sessionManager.GetSession(playerID)
 	if !exists {
@@ -350,14 +396,17 @@ func (h *MessageHandler) handleStandUp(playerID uuid.UUID, req Request) {
 
 	table := h.tableManager.GetOrCreateTable(tableID)
 
-	wasInHand, err := table.PlayerStandUp(playerID.String())
-	if err != nil {
+	result := h.sendTableCommand(table, domain.PlayerAction{
+		Type:     domain.ActionStandUp,
+		PlayerID: playerID.String(),
+	})
+	if result.Err != nil {
 		h.logger.Warn("stand up failed",
 			zap.String("player_id", playerID.String()),
 			zap.String("table_id", tableID),
-			zap.Error(err),
+			zap.Error(result.Err),
 		)
-		h.sendError(playerID, "stand_up_failed", err.Error())
+		h.sendError(playerID, "stand_up_failed", result.Err.Error())
 		return
 	}
 
@@ -365,13 +414,13 @@ func (h *MessageHandler) handleStandUp(playerID uuid.UUID, req Request) {
 
 	h.sendResponse(playerID, "STAND_UP_SUCCESS", map[string]interface{}{
 		"table_id":    tableID,
-		"was_in_hand": wasInHand,
+		"was_in_hand": result.WasInHand,
 	})
 
 	h.logger.Info("player stood up",
 		zap.String("player_id", playerID.String()),
 		zap.String("table_id", tableID),
-		zap.Bool("was_in_hand", wasInHand),
+		zap.Bool("was_in_hand", result.WasInHand),
 	)
 }
 
