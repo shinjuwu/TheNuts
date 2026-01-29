@@ -504,7 +504,7 @@ func (h *MessageHandler) buildTableSnapshot(table *domain.Table) map[string]inte
 	players := make([]map[string]interface{}, 0)
 
 	for _, player := range table.Players {
-		if player != nil {
+		if player != nil && player.SeatIdx >= 0 {
 			players = append(players, map[string]interface{}{
 				"id":          player.ID,
 				"seat_idx":    player.SeatIdx,

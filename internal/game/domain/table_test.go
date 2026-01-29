@@ -686,3 +686,153 @@ func TestDisconnectTimeout_BeforeTryStartNewHand(t *testing.T) {
 		t.Errorf("Expected table still Idle (only 1 ready player), got %v", table.State)
 	}
 }
+
+// === removePlayer 手牌中離開測試 ===
+
+// TestRemovePlayer_DuringIdle 閒置時移除，立即從 Players 和 Seats 清除
+func TestRemovePlayer_DuringIdle(t *testing.T) {
+	table := NewTable("remove-idle-test")
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusSittingOut}
+	table.Players["p1"] = p1
+	table.Seats[0] = p1
+
+	table.State = StateIdle
+
+	err := table.removePlayer("p1")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if _, exists := table.Players["p1"]; exists {
+		t.Error("Expected player removed from Players map during idle")
+	}
+	if table.Seats[0] != nil {
+		t.Error("Expected seat 0 cleared during idle")
+	}
+}
+
+// TestRemovePlayer_DuringHand_CurrentPlayer 移除當前行動者，遊戲推進到下一位
+func TestRemovePlayer_DuringHand_CurrentPlayer(t *testing.T) {
+	table := NewTable("remove-current-test")
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+	p3 := &Player{ID: "p3", SeatIdx: 2, Chips: 1000, Status: StatusPlaying, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Seats[2] = p3
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Players["p3"] = p3
+
+	table.State = StatePreFlop
+	table.DealerPos = 0
+	table.CurrentPos = 0 // p1 是當前行動者
+	table.MinBet = 20
+
+	err := table.removePlayer("p1")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// p1 應該被標記為 Folded，保留在 Players map 中
+	if p1.Status != StatusFolded {
+		t.Errorf("Expected p1 status Folded, got %v", p1.Status)
+	}
+	if _, exists := table.Players["p1"]; !exists {
+		t.Error("Expected p1 still in Players map during hand")
+	}
+
+	// p1 的座位應該被釋放
+	if table.Seats[0] != nil {
+		t.Error("Expected seat 0 cleared")
+	}
+	if p1.SeatIdx != -1 {
+		t.Errorf("Expected p1 SeatIdx == -1, got %d", p1.SeatIdx)
+	}
+
+	// 遊戲應推進到下一位（p2 在座位 1）
+	if table.CurrentPos != 1 {
+		t.Errorf("Expected CurrentPos moved to 1 (p2), got %d", table.CurrentPos)
+	}
+}
+
+// TestRemovePlayer_DuringHand_BetPreserved 離開玩家的下注被計入底池
+func TestRemovePlayer_DuringHand_BetPreserved(t *testing.T) {
+	table := NewTable("remove-bet-test")
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 980, Status: StatusPlaying, CurrentBet: 20, HoleCards: []Card{}, HasActed: true}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 980, Status: StatusPlaying, CurrentBet: 20, HoleCards: []Card{}, HasActed: true}
+	p3 := &Player{ID: "p3", SeatIdx: 2, Chips: 980, Status: StatusPlaying, CurrentBet: 20, HoleCards: []Card{}}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Seats[2] = p3
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+	table.Players["p3"] = p3
+
+	table.State = StatePreFlop
+	table.DealerPos = 0
+	table.CurrentPos = 2 // p3 是當前行動者
+	table.MinBet = 20
+
+	// p1 離開，但不是當前行動者
+	err := table.removePlayer("p1")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// p1 的 CurrentBet 應保留（不被清零）
+	if p1.CurrentBet != 20 {
+		t.Errorf("Expected p1 CurrentBet preserved at 20, got %d", p1.CurrentBet)
+	}
+
+	// p3 Check 完成，進入下一階段（此時 nextStreet 會收集所有玩家的 CurrentBet）
+	table.handleAction(PlayerAction{PlayerID: "p3", Type: ActionCheck})
+
+	// 驗證底池包含了 p1 的下注（20 + 20 + 20 = 60）
+	if table.Pots.Total() != 60 {
+		t.Errorf("Expected pot total 60 (including departed player's bet), got %d", table.Pots.Total())
+	}
+}
+
+// TestRemovePlayer_DuringHand_LastTwoPlayers 只剩一人時手牌正確結束
+func TestRemovePlayer_DuringHand_LastTwoPlayers(t *testing.T) {
+	table := NewTable("remove-last-test")
+
+	p1 := &Player{ID: "p1", SeatIdx: 0, Chips: 980, Status: StatusPlaying, CurrentBet: 20, HoleCards: []Card{}, HasActed: true}
+	p2 := &Player{ID: "p2", SeatIdx: 1, Chips: 980, Status: StatusPlaying, CurrentBet: 20, HoleCards: []Card{}, HasActed: true}
+
+	table.Seats[0] = p1
+	table.Seats[1] = p2
+	table.Players["p1"] = p1
+	table.Players["p2"] = p2
+
+	table.State = StatePreFlop
+	table.DealerPos = 0
+	table.CurrentPos = 0 // p1 是當前行動者
+	table.MinBet = 20
+
+	err := table.removePlayer("p1")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// 只剩 p2，手牌應該結束
+	if table.State != StateIdle {
+		t.Errorf("Expected table state Idle (hand ended), got %v", table.State)
+	}
+
+	// p2 應該贏得底池（20 + 20 = 40）
+	if p2.Chips != 1020 {
+		t.Errorf("Expected p2 chips 1020 (980 + 40 pot), got %d", p2.Chips)
+	}
+
+	// p1 應該在 endHand() 清理中被移除
+	if _, exists := table.Players["p1"]; exists {
+		t.Error("Expected p1 removed from Players map after hand ended")
+	}
+}

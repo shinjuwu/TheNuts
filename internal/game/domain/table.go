@@ -326,6 +326,8 @@ func (t *Table) addPlayer(player *Player, seatIdx int) error {
 }
 
 // removePlayer 將玩家從桌子移除（私有方法，僅由 processCommand 調用）
+// 手牌進行中離開時，不立即從 Players map 移除，而是標記為 Folded 並從 Seats 移除，
+// 保留 CurrentBet 供底池計算，在 endHand() 時統一清理。
 func (t *Table) removePlayer(playerID string) error {
 	player, exists := t.Players[playerID]
 	if !exists {
@@ -337,16 +339,45 @@ func (t *Table) removePlayer(playerID string) error {
 		return errors.New("cannot leave table while all-in")
 	}
 
-	// 如果正在遊戲中，先自動 StandUp（會 Fold）
-	if player.Status == StatusPlaying {
-		player.StandUp()
+	// 手牌未進行中：直接移除
+	if t.State == StateIdle {
+		delete(t.Players, playerID)
+		delete(t.DisconnectedAt, playerID)
+		if player.SeatIdx >= 0 && player.SeatIdx < 9 {
+			t.Seats[player.SeatIdx] = nil
+		}
+		return nil
 	}
 
-	// 從 map、seat、斷線記錄移除
-	delete(t.Players, playerID)
-	delete(t.DisconnectedAt, playerID)
+	// === 手牌進行中 ===
+
+	// 記錄是否為當前行動者
+	isCurrentPlayer := t.Seats[t.CurrentPos] != nil &&
+		t.Seats[t.CurrentPos].ID == playerID
+
+	// 如果正在遊戲中，標記為 Folded（保留 CurrentBet 供底池計算）
+	if player.Status == StatusPlaying {
+		player.Status = StatusFolded
+		player.HoleCards = nil
+		player.HasActed = true
+	}
+
+	// 從 Seats 移除（釋放座位），但保留在 Players map
 	if player.SeatIdx >= 0 && player.SeatIdx < 9 {
 		t.Seats[player.SeatIdx] = nil
+	}
+	player.SeatIdx = -1 // 標記待清理
+	delete(t.DisconnectedAt, playerID)
+
+	// 推進遊戲流程
+	if isCurrentPlayer {
+		if t.isRoundComplete() {
+			t.nextStreet()
+		} else {
+			t.moveToNextPlayer()
+		}
+	} else if t.isRoundComplete() {
+		t.nextStreet()
 	}
 
 	return nil
@@ -615,6 +646,14 @@ func (t *Table) endHand() {
 
 	// 重置玩家狀態
 	t.resetPlayersForNextHand()
+
+	// 清理手牌期間離開的玩家（SeatIdx == -1）
+	for id, p := range t.Players {
+		if p.SeatIdx < 0 {
+			delete(t.Players, id)
+			t.Logger.Info("removed player who left during hand", "player_id", id)
+		}
+	}
 
 	// 設置狀態為 Idle，準備下一手牌
 	t.State = StateIdle
